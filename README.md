@@ -1,0 +1,101 @@
+# pi-cc-steer
+
+**Talk to [pi](https://pi.dev) while it works, the way you talk to Claude Code.**
+
+With this extension, messages you type while pi is working are held and then delivered **together, at the next tool
+boundary**. The model is told they arrived mid-task, so it finishes the step it is on and then deals with everything
+you said. Press ↑ at any point to pull the waiting messages back into the editor and change them.
+
+## Why
+
+Out of the box, pi delivers messages typed mid-turn **one per model call**. Type three quick corrections and they
+arrive across three separate model calls: the model reacts to the first before it has seen the second, and you pay for extra round trips.
+Setting `steeringMode: "all"` sends them together, but the model gets your raw text with no signal that it interrupted
+work in progress, and you can't edit what's already queued.
+
+pi-cc-steer fixes all three:
+
+- **Together.** Everything you typed goes in as one message in the next request, right after the tool results.
+- **Understood.** The model sees the batch framed as "sent while you were working — finish your step, then address all
+  of it", so it doesn't drop the task it was halfway through.
+- **Editable.** ↑ (or Esc) brings the waiting messages back into the editor. The run keeps going, and nothing is lost.
+
+Your transcript shows exactly what you typed; the framing is added only to what the model sees.
+
+## Install
+
+```bash
+pi install git:github.com/panbergco/pi-cc-steer        # every session
+pi install -l git:github.com/panbergco/pi-cc-steer     # this project only
+```
+
+Then `/reload`, or start a new session. It needs no settings change and works with pi's default `steeringMode`.
+
+## How it works
+
+| You do | What happens |
+|---|---|
+| Press Enter while the agent works | The message waits above the editor as `↳ your text`. Nothing is sent yet. |
+| Keep typing, pressing Enter each time | Each message joins the wait list. |
+| The agent finishes its current tool call | The whole list goes in as **one** message in the same request as the tool results, framed for the model as mid-task input. |
+| The agent finishes a reply without calling a tool | The list starts the next turn as an ordinary prompt, without the framing. |
+| ↑ (cursor on the first line) or Esc, while messages wait | They come back into the editor, ahead of whatever you'd typed. Edit them and press Enter to queue them again. |
+| Esc with nothing waiting | Interrupts the run, as usual. |
+| The run is interrupted while messages wait | They come back into the editor instead of being sent. |
+| `/command` or `!shell` while the agent works | Left to pi, exactly as without the extension. |
+
+Under the hood it uses only public pi extension APIs:
+
+- the `input` event takes mid-turn messages into the extension's own queue;
+- `turn_end` sends the queue as one message with `sendUserMessage(…, { deliverAs: "steer" })`;
+- the `context` event adds the framing to that message for the model only, and does so deterministically, so prompt
+  caching is unaffected;
+- a wrapped editor handles ↑ and Esc, and still wraps any custom editor another extension installed first.
+
+The logic lives in `steer.ts`, which has no pi imports and is covered by `npm test`. `index.ts` connects it to pi.
+
+## Compared with Claude Code
+
+The behaviour is modelled on Claude Code's handling of messages typed while it works. No Claude Code code is included,
+and the text the model sees is original.
+
+| | Claude Code | pi default | pi, `steeringMode: "all"` | **pi-cc-steer** |
+|---|---|---|---|---|
+| When mid-turn messages are delivered | after the current tool batch | after the current tool batch | after the current tool batch | **after the current tool batch** |
+| How many at once | all | one | all | **all** |
+| Model is told they arrived mid-task | yes | no | no | **yes** |
+| Your transcript shows your plain text | yes | yes | yes | **yes** |
+| ↑ / Esc pulls them back to edit | yes | Alt+↑ only | Alt+↑ only | **yes** |
+| Slash commands typed mid-turn | held, run one by one afterwards | run by pi | run by pi | run by pi |
+| Queued images restored when editing | yes | no | no | no, they stay queued |
+
+The small differences that remain:
+
+- **One message, not several.** Claude Code adds each queued message to the conversation separately. pi-cc-steer sends
+  one message containing all of them, joined by line breaks. The model sees the same text in the same order.
+- **Images.** pi's editor API cannot re-attach images, so ↑ and Esc leave messages that carry images in the queue. They
+  are still delivered with the batch.
+- **Framing words.** Claude Code and pi-cc-steer both tell the model to finish the step it is on and then address the
+  message. The wording here is pi-cc-steer's own.
+
+## Works with
+
+Editor add-ons such as status bars and footers, because it wraps whatever editor is already installed.
+
+It does **not** combine with other extensions that take over mid-turn input, such as
+[pi-queue-steer](https://github.com/tmustier/pi-queue-steer) or pi-queue-picker. Use one or the other. pi-queue-steer is
+the richer choice if you want a visible, reorderable queue with separate steering and follow-up lanes. pi-cc-steer is
+the smaller one (about 200 lines) if you want Claude Code's behaviour and nothing else.
+
+Only interactive input is affected. RPC mode, print mode and messages sent by other extensions pass through unchanged.
+
+## Development
+
+```bash
+npm test                   # node --test steer.test.ts — the queue logic, no pi needed
+pi -e ./index.ts           # try it in one session without installing
+```
+
+## License
+
+MIT

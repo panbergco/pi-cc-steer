@@ -1,0 +1,33 @@
+{
+  "name": "pi-cc-steer",
+  "version": "0.1.0",
+  "description": "Claude Code-style mid-turn steering for pi: messages typed while the agent works go in together at the next tool boundary, framed for the model, editable with up or esc.",
+  "type": "module",
+  "license": "MIT",
+  "author": "panbergco",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "steering",
+    "queue"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/panbergco/pi-cc-steer.git"
+  },
+  "homepage": "https://github.com/panbergco/pi-cc-steer",
+  "files": [
+    "index.ts",
+    "steer.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test steer.test.ts"
+  },
+  "pi": {
+    "extensions": [
+      "index.ts"
+    ]
+  }
+}
