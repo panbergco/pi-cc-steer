@@ -6,6 +6,21 @@ With this extension, messages you type while pi is working are held and then del
 boundary**. The model is told they arrived mid-task, so it finishes the step it is on and then deals with everything
 you said. Press ↑ at any point to pull the waiting messages back into the editor and change them.
 
+## See it
+
+**1 · Typed while the agent works.** Three messages wait above the editor while `./check.sh lint` runs.
+
+![Three messages waiting above the editor while a tool runs](assets/1-queued.png)
+
+**2 · ↑ to edit.** The waiting messages come back into the editor; the agent keeps working.
+
+![The waiting messages pulled back into the editor](assets/2-edit.png)
+
+**3 · Delivered together.** After the next tool call they go in as one message, and the model answers every point in the
+three-line summary that was asked for.
+
+![The messages delivered as one and every point answered](assets/3-delivered.png)
+
 ## Why
 
 Out of the box, pi delivers messages typed mid-turn **one per model call**. Type three quick corrections and they

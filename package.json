@@ -20,7 +20,8 @@
     "index.ts",
     "steer.ts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "assets"
   ],
   "scripts": {
     "test": "node --test steer.test.ts"
