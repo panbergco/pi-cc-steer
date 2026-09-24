@@ -8,27 +8,35 @@
   "keywords": [
     "pi-package",
     "pi-extension",
+    "pi-coding-agent",
     "steering",
-    "queue"
+    "queue",
+    "claude-code"
   ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/panbergco/pi-cc-steer.git"
   },
   "homepage": "https://github.com/panbergco/pi-cc-steer",
+  "bugs": {
+    "url": "https://github.com/panbergco/pi-cc-steer/issues"
+  },
   "files": [
     "index.ts",
     "steer.ts",
     "README.md",
-    "LICENSE",
-    "assets"
+    "LICENSE"
   ],
   "scripts": {
     "test": "node --test steer.test.ts"
   },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "pi": {
     "extensions": [
       "index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/1-queued.png"
   }
 }

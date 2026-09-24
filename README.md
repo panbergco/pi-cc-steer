@@ -10,16 +10,16 @@ you said. Press ↑ at any point to pull the waiting messages back into the edit
 
 **1 · Typed while the agent works.** Three messages wait above the editor while `./check.sh lint` runs.
 
-![Three messages waiting above the editor while a tool runs](assets/1-queued.png)
+![Three messages waiting above the editor while a tool runs](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/1-queued.png)
 
 **2 · ↑ to edit.** The waiting messages come back into the editor; the agent keeps working.
 
-![The waiting messages pulled back into the editor](assets/2-edit.png)
+![The waiting messages pulled back into the editor](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/2-edit.png)
 
-**3 · Delivered together.** After the next tool call they go in as one message, and the model answers every point in the
-three-line summary that was asked for.
+**3 · Delivered together.** When `lint` finishes they go in as one message. The model plans the tests "with build skip",
+and ends with the three-line summary that was asked for, including the largest file.
 
-![The messages delivered as one and every point answered](assets/3-delivered.png)
+![The messages delivered as one and every point answered](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/3-delivered.png)
 
 ## Why
 
@@ -40,9 +40,11 @@ Your transcript shows exactly what you typed; the framing is added only to what 
 ## Install
 
 ```bash
-pi install git:github.com/panbergco/pi-cc-steer        # every session
-pi install -l git:github.com/panbergco/pi-cc-steer     # this project only
+pi install npm:pi-cc-steer          # every session
+pi install -l npm:pi-cc-steer       # this project only
 ```
+
+Or straight from GitHub: `pi install git:github.com/panbergco/pi-cc-steer`.
 
 Then `/reload`, or start a new session. It needs no settings change and works with pi's default `steeringMode`.
 

@@ -1,2 +1,4 @@
 .scratch/
 node_modules/
+.env
+.npmrc
