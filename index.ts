@@ -6,8 +6,8 @@
  *   text block each, in the same request as the tool results. The model sees each block framed
  *   as "sent while you were working"; the transcript keeps your words.
  * - If the agent finishes first, the held messages start the next turn together, unframed.
- * - ↑ on the first line, or Esc, pulls every held message back into the editor. Esc with nothing
- *   held still interrupts, as before.
+ * - ↑ on the first line, Esc, or pi's own Alt+↑ pulls every held message back into the editor. Esc with
+ *   nothing held still interrupts, as before.
  *
  * Works without changing pi's `steeringMode`: the batch is one message, so one-at-a-time
  * delivers all of it. Commands (`/…`) and shell input (`!…`) keep pi's own handling.
@@ -72,7 +72,9 @@ export default function (pi: ExtensionAPI) {
 				if (queue.length > 0 && !e.isShowingAutocomplete?.()) {
 					const up = keybindings.matches(data, "tui.editor.cursorUp") && (e.getCursor?.().line ?? 0) === 0;
 					const esc = keybindings.matches(data, "app.interrupt");
-					if ((up || esc) && popIntoEditor(ctx)) return;
+					// pi's own "restore queued messages" key (Alt+↑, Alt+Q on Windows): the messages live here, not in pi's queue.
+					const dequeue = keybindings.matches(data, "app.message.dequeue");
+					if ((up || esc || dequeue) && popIntoEditor(ctx)) return;
 				}
 				handleInput(data);
 			};

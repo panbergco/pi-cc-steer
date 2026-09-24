@@ -2,9 +2,9 @@
 
 **Talk to [pi](https://pi.dev) while it works, the way you talk to Claude Code.**
 
-With this extension, messages you type while pi is working are held and then delivered **together, at the next tool
-boundary**. The model is told they arrived mid-task, so it finishes the step it is on and then deals with everything
-you said. Press ↑ at any point to pull the waiting messages back into the editor and change them.
+Messages you type while pi is working reach the model **framed the way Claude Code frames them**: "the user sent
+this while you were working — finish the step you are on, then address it". They go in together at the next tool
+boundary, your transcript keeps your plain text, and ↑ pulls them back into the editor while they wait.
 
 ## See it
 
@@ -21,21 +21,22 @@ and ends with the three-line summary that was asked for, including the largest f
 
 ![The messages delivered as one and every point answered](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/3-delivered.png)
 
-## Why
+## Do you need it?
 
-Out of the box, pi delivers messages typed mid-turn **one per model call**. Type three quick corrections and they
-arrive across three separate model calls: the model reacts to the first before it has seen the second, and you pay for extra round trips.
-Setting `steeringMode: "all"` sends them together, but the model gets your raw text with no signal that it interrupted
-work in progress, and you can't edit what's already queued.
+Much of this is already in pi, so check the native settings first:
 
-pi-cc-steer fixes all three:
+- **Batching:** set Steering mode to `all` in `/settings`. Everything you queued then arrives at the next tool
+  boundary instead of one message per model call.
+- **Editing:** Alt+↑ (Alt+Q on Windows) pulls every queued message back into the editor without stopping the run.
 
-- **Together.** Everything you typed goes in as one message in the next request, right after the tool results.
-- **Understood.** The model sees the batch framed as "sent while you were working — finish your step, then address all
-  of it", so it doesn't drop the task it was halfway through.
-- **Editable.** ↑ (or Esc) brings the waiting messages back into the editor. The run keeps going, and nothing is lost.
+If that is all you want, you don't need this extension. What pi-cc-steer adds on top:
 
-Your transcript shows exactly what you typed; the framing is added only to what the model sees.
+- **The framing.** Natively the model gets your raw text, with nothing telling it that it interrupted work in
+  progress. pi-cc-steer tells it the messages arrived mid-task and to finish its current step first, which is what
+  Claude Code does. The framing is added only to what the model sees; your transcript keeps what you typed.
+- **Only your typing changes.** Setting `steeringMode: "all"` also batches messages that other extensions queue.
+  pi-cc-steer leaves pi's default alone and batches only what you type.
+- **Plain ↑ and Esc** to edit, as in Claude Code, alongside pi's Alt+↑. This is convenience, not a new capability.
 
 ## Install
 
@@ -80,9 +81,10 @@ and the text the model sees is original.
 |---|---|---|---|---|
 | When mid-turn messages are delivered | after the current tool batch | after the current tool batch | after the current tool batch | **after the current tool batch** |
 | How many at once | all | one | all | **all** |
-| Model is told they arrived mid-task | yes | no | no | **yes** |
+| **Model is told they arrived mid-task** | **yes** | no | no | **yes** |
 | Your transcript shows your plain text | yes | yes | yes | **yes** |
-| ↑ / Esc pulls them back to edit | yes | Alt+↑ only | Alt+↑ only | **yes** |
+| Pull them back to edit without stopping the run | ↑ or Esc | Alt+↑ | Alt+↑ | **↑, Esc, or Alt+↑** |
+| Messages queued by other extensions | not applicable | one at a time | batched too | **left at pi's default** |
 | Slash commands typed mid-turn | held, run one by one afterwards | run by pi | run by pi | run by pi |
 | Queued images restored when editing | yes | no | no | no, they stay queued |
 
