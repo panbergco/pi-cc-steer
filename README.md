@@ -139,7 +139,8 @@ The small differences that remain:
   compaction queue.
 - **Races with other extensions.** A batch is recognised by its text when it arrives. Another extension sending the
   same text at the same moment (or, for a batch with images, text that starts the same way) can take its framing, and if pi refuses a send-now prompt, its unused record can
-  later frame an identical message you type.
+  later frame an identical message you type. If another extension rewrites a batch's text on its way in, that batch
+  reaches the model unframed, as it would in native pi.
 - **Older sessions.** Sessions from 0.1.0–0.1.3 keep their framing records, which match by text alone. Sessions from
   0.1.4 (GitHub only) stored the `Interrupted` marker as a message: it is kept out of requests, not out of compaction
   summaries.
