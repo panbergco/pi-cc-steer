@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { batchContent, batchKey, frame, frameMidTurn, isQueueable, popEditable } from "./steer.ts";
+import { batchContent, batchKey, frame, frameMidTurn, INTERRUPTED_NOTE, interruptedOutput, isQueueable, popEditable } from "./steer.ts";
 
 test("a batch is one message: one text block per queued message, images last", () => {
   const c = batchContent([{ text: "a", images: [] }, { text: "b", images: [{ type: "image", data: "x" }] }]);
@@ -47,4 +47,10 @@ test("an interrupted batch is framed as an interruption, a mid-turn one as mid-t
   assert.equal(out[1].content, frame("also add a test", "mid-turn"));
   assert.match(out[0].content as string, /interrupted your previous step/);
   assert.notEqual(frame("x", "interrupt"), frame("x", "mid-turn"));
+});
+
+test("a tool cut off by send-now keeps its output and reads as interrupted, not aborted", () => {
+  assert.equal(interruptedOutput("tick 1\ntick 2\n\nCommand aborted"), "tick 1\ntick 2\n\n" + INTERRUPTED_NOTE);
+  assert.equal(interruptedOutput("Operation aborted"), INTERRUPTED_NOTE);
+  assert.equal(interruptedOutput("partial\nabortedness is a word"), "partial\nabortedness is a word\n\n" + INTERRUPTED_NOTE);
 });

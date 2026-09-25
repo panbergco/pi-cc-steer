@@ -5,11 +5,12 @@
  * - At the next tool boundary every held message goes in at once, as one user message with one
  *   text block each, in the same request as the tool results. The model sees each block framed
  *   as "sent while you were working"; the transcript keeps your words.
- * - Ctrl+Enter (or Alt+S where a terminal can't send Ctrl+Enter) sends now: whatever is typed joins
- *   the held messages, the current turn is interrupted, and they all start the next turn at once,
- *   framed so the model knows its previous step was cut off. Claude Code's "send now" key.
+ * - Ctrl+Enter (or Alt+S where a terminal can't send Ctrl+Enter), or Esc while messages are held, sends
+ *   now: whatever is typed joins the held messages, the current step is interrupted, and they all start
+ *   the next turn at once, framed so the model knows its previous step was cut off. Like Claude Code, the
+ *   interruption is a hand-off, not a failure: no red "aborted" lines, the cut-off tool reads "interrupted".
  * - If the agent finishes first, the held messages start the next turn together, unframed.
- * - ↑ on the first line, Esc, or pi's own Alt+↑ pulls every held message back into the editor. Esc with
+ * - ↑ on the first line, or pi's own Alt+↑, pulls every held message back into the editor. Esc with
  *   nothing held still interrupts, as before.
  *
  * Works without changing pi's `steeringMode`: the batch is one message, so one-at-a-time
@@ -17,13 +18,24 @@
  */
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesKey } from "@earendil-works/pi-tui";
-import { batchContent, batchKey, type Framing, frameMidTurn, isQueueable, popEditable, type Queued } from "./steer.ts";
+import {
+	batchContent,
+	batchKey,
+	type Framing,
+	frameMidTurn,
+	interruptedOutput,
+	isQueueable,
+	popEditable,
+	type Queued,
+} from "./steer.ts";
 
 const ENTRY = "cc-steer.mid-turn";
 const WIDGET = "cc-steer";
 const INSTALLED = Symbol.for("pi-cc-steer.editor");
 /** Claude Code's send-now key, plus a single-key fallback for terminals that can't tell Ctrl+Enter from Enter. */
 const SEND_NOW_KEYS = ["ctrl+enter", "alt+s"] as const;
+/** Marks a reply cut off by send-now, so its empty remains stay out of the model's context. */
+const CUT = "ccSteerInterrupted";
 
 export default function (pi: ExtensionAPI) {
 	let queue: Queued[] = [];
@@ -43,7 +55,7 @@ export default function (pi: ExtensionAPI) {
 		lines.push(
 			ctx.ui.theme.fg(
 				"dim",
-				sendNow ? "  interrupting to send now…" : "  sends at the next tool boundary · ctrl+enter to send now · ↑ or esc to edit",
+				sendNow ? "  sending now…" : "  sends at the next tool boundary · ctrl+enter or esc to send now · ↑ to edit",
 			),
 		);
 		ctx.ui.setWidget(WIDGET, lines);
@@ -101,11 +113,12 @@ export default function (pi: ExtensionAPI) {
 				if (e.isShowingAutocomplete?.()) return handleInput(data);
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
+					// Esc with messages waiting sends them now, as in Claude Code (a bare Esc still just interrupts).
+					if (keybindings.matches(data, "app.interrupt") && sendNowFromEditor(ctx)) return;
 					const up = keybindings.matches(data, "tui.editor.cursorUp") && (e.getCursor?.().line ?? 0) === 0;
-					const esc = keybindings.matches(data, "app.interrupt");
 					// pi's own "restore queued messages" key (Alt+↑, Alt+Q on Windows): the messages live here, not in pi's queue.
 					const dequeue = keybindings.matches(data, "app.message.dequeue");
-					if ((up || esc || dequeue) && popIntoEditor(ctx)) return;
+					if ((up || dequeue) && popIntoEditor(ctx)) return;
 				}
 				handleInput(data);
 			};
@@ -161,8 +174,33 @@ export default function (pi: ExtensionAPI) {
 		flush(ctx, "prompt", interrupted ? "interrupt" : undefined);
 	});
 
+	// Send-now is a hand-off, not a failure (Claude Code tags it 'interrupt' and shows no error). A tool cut
+	// off by it reports "interrupted", keeping any output it had produced, instead of a red "Command aborted".
+	pi.on("tool_result", (event) => {
+		if (!sendNow || !event.isError) return;
+		const text = event.content
+			.filter((c) => c.type === "text")
+			.map((c) => (c as { text: string }).text)
+			.join("\n");
+		return { content: [{ type: "text", text: interruptedOutput(text) }], isError: false };
+	});
+
+	// The reply that send-now cut off would render as a red "Operation aborted" / "Error: … aborted". Keep
+	// whatever text it had streamed, drop the rest, and let the run end quietly; agent_settled sends the queue.
+	pi.on("message_end", (event) => {
+		const m = event.message as { role: string; stopReason?: string; content?: Array<{ type: string; text?: string }> };
+		if (!sendNow || m.role !== "assistant" || (m.stopReason !== "aborted" && m.stopReason !== "error")) return;
+		const text = (m.content ?? []).filter((c) => c.type === "text" && (c.text ?? "").trim() !== "");
+		const { errorMessage: _drop, ...rest } = event.message as unknown as Record<string, unknown>;
+		return { message: { ...rest, content: text, stopReason: "stop", [CUT]: true } as unknown as typeof event.message };
+	});
+
 	pi.on("context", (event) => {
-		if (framed.size === 0) return;
-		return { messages: frameMidTurn(event.messages as never[], framed) };
+		// A cut-off reply with nothing left is not a message a provider will accept: leave it out, as pi does natively.
+		const msgs = (event.messages as Array<Record<string, unknown>>).filter(
+			(m) => !(m[CUT] && Array.isArray(m.content) && m.content.length === 0),
+		);
+		if (framed.size === 0 && msgs.length === event.messages.length) return;
+		return { messages: frameMidTurn(msgs as never[], framed) };
 	});
 }

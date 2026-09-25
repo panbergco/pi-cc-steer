@@ -98,3 +98,10 @@ export function isQueueable(text: string): boolean {
 	const t = text.trimStart();
 	return t !== "" && !t.startsWith("/") && !t.startsWith("!");
 }
+
+/** What a tool cut off by send-now reports instead of an error: whatever it printed, then the note. */
+export const INTERRUPTED_NOTE = "[Interrupted: the user sent a new message]";
+export function interruptedOutput(errorText: string): string {
+	const kept = errorText.replace(/\s*(Command aborted|Operation aborted|This operation was aborted)\s*$/i, "").trim();
+	return kept ? `${kept}\n\n${INTERRUPTED_NOTE}` : INTERRUPTED_NOTE;
+}
