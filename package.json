@@ -1,6 +1,6 @@
 {
   "name": "pi-cc-steer",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Claude Code-style mid-turn steering for pi: messages typed while the agent works go in together at the next tool boundary, framed for the model, editable with up or esc.",
   "type": "module",
   "license": "MIT",
@@ -28,11 +28,15 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test steer.test.ts"
+    "test": "node --test steer.test.ts index.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@earendil-works/pi-tui": "^0.87.1"
   },
   "pi": {
     "extensions": [

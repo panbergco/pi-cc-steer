@@ -196,8 +196,19 @@ export default function (pi: ExtensionAPI) {
 	pi.on("input", (event, ctx) => {
 		// The person is sending again: anything still held goes with it. Not for an Alt+Enter follow-up, which pi
 		// delivers only after the run, so released images would arrive before the words that go with them.
-		if (event.source === "interactive" && hold && event.streamingBehavior !== "followUp") {
+		if (event.source === "interactive" && hold && event.streamingBehavior !== "followUp" && isQueueable(event.text)) {
 			hold = false;
+			// Idle: this message starts the run, so the held messages ride in it rather than trailing behind it.
+			if (!event.streamingBehavior && queue.length > 0) {
+				const held = queue;
+				queue = [];
+				render(ctx);
+				return {
+					action: "transform",
+					text: batchKey([...held.map((q) => q.text), event.text]),
+					images: [...held.flatMap((q) => q.images), ...(event.images ?? [])] as typeof event.images,
+				};
+			}
 			render(ctx);
 		}
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {

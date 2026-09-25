@@ -72,7 +72,7 @@ Then `/reload`, or start a new session. It needs no settings change and works wi
 | **Ctrl+Enter** while the agent works, or **Esc** while messages wait | Whatever you've typed joins the queue, the current step is interrupted, a dim `Interrupted` line appears, and everything queued starts the next turn at once. A cut-off command shows its output and `[Interrupted: the user sent a new message]`; a cut-off reply keeps what it had written. The model is told it was interrupted. Where the terminal can't send Ctrl+Enter, use **Alt+S**. Also works during a manual `/compact`. |
 | ↑ (cursor on the first line) or Alt+↑, while messages wait | Text messages come back into the editor, ahead of whatever you'd typed. Edit them and press Enter to queue them again. Messages carrying images stay queued. |
 | Esc with nothing waiting | Interrupts the run, as usual. |
-| The run is interrupted some other way while messages wait (another extension, a command) | Seen at the end of the turn: text messages come back into the editor instead of being sent; messages carrying images are held and go with the next message you send (not with an Alt+Enter follow-up). |
+| The run is interrupted some other way while messages wait (another extension, a command) | Seen at the end of the turn: text messages come back into the editor instead of being sent; messages carrying images are held and ride in the next message you send (not in a command or an Alt+Enter follow-up). |
 | `/command` or `!shell` while the agent works | Left to pi, exactly as without the extension. |
 
 Under the hood it uses only public pi extension APIs:
@@ -89,7 +89,7 @@ Under the hood it uses only public pi extension APIs:
 - a wrapped editor handles Ctrl+Enter, Esc and ↑, and still wraps any custom editor another extension installed first.
 
 The logic lives in `steer.ts`, which has no pi imports and is covered by `npm test`. `index.ts` connects it to pi;
-it is tested by driving real pi sessions, not by `npm test`.
+`index.test.ts` drives its handlers with a stub pi, and the rest is tested by driving real pi sessions.
 
 ## Compared with Claude Code
 
@@ -161,7 +161,7 @@ the framing of an earlier batch still applies to every request that carries it.
 ## Development
 
 ```bash
-npm test                   # node --test steer.test.ts — the pure logic in steer.ts, no pi needed
+npm install && npm test    # steer.test.ts (pure logic) and index.test.ts (the pi handlers, driven with a stub pi)
 pi -e ./index.ts           # try it in one session without installing
 ```
 
