@@ -8,7 +8,7 @@ test("a batch is one message: one text block per queued message, images last", (
 });
 
 test("only the delivered mid-turn batch is framed, whether pi kept its blocks or joined them", () => {
-  const mid = new Set([batchKey(["fix the test", "also rename it"])]);
+  const mid = new Map([[batchKey(["fix the test", "also rename it"]), "mid-turn" as const]]);
   const msgs = [
     { role: "user", content: "hello" },
     { role: "user", content: [{ type: "text", text: "fix the test" }, { type: "text", text: "also rename it" }] },
@@ -35,4 +35,16 @@ test("up/esc pulls text-only messages ahead of the draft; image messages stay qu
 test("commands and shell input are left to pi", () => {
   assert.equal(isQueueable("do it"), true);
   for (const t of ["/model", "  /skill:x", "!ls", "", "   "]) assert.equal(isQueueable(t), false, t);
+});
+
+test("an interrupted batch is framed as an interruption, a mid-turn one as mid-turn", () => {
+  const framed = new Map([["stop, use pnpm", "interrupt" as const], ["also add a test", "mid-turn" as const]]);
+  const out = frameMidTurn([
+    { role: "user", content: "stop, use pnpm" },
+    { role: "user", content: "also add a test" },
+  ], framed);
+  assert.equal(out[0].content, frame("stop, use pnpm", "interrupt"));
+  assert.equal(out[1].content, frame("also add a test", "mid-turn"));
+  assert.match(out[0].content as string, /interrupted your previous step/);
+  assert.notEqual(frame("x", "interrupt"), frame("x", "mid-turn"));
 });

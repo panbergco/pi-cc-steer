@@ -4,7 +4,8 @@
 
 Messages you type while pi is working reach the model **framed the way Claude Code frames them**: "the user sent
 this while you were working — finish the step you are on, then address it". They go in together at the next tool
-boundary, your transcript keeps your plain text, and ↑ pulls them back into the editor while they wait.
+boundary, or right away with **Ctrl+Enter**, which interrupts the current step like Claude Code's send-now key. Your
+transcript keeps your plain text, and ↑ pulls queued messages back into the editor while they wait.
 
 ## See it
 
@@ -36,6 +37,9 @@ If that is all you want, you don't need this extension. What pi-cc-steer adds on
   Claude Code does. The framing is added only to what the model sees; your transcript keeps what you typed.
 - **Only your typing changes.** Setting `steeringMode: "all"` also batches messages that other extensions queue.
   pi-cc-steer leaves pi's default alone and batches only what you type.
+- **Send now.** Ctrl+Enter interrupts the current step and delivers everything queued, plus whatever you've typed,
+  at once. The model is told its previous step was cut off. Natively pi can only interrupt (Esc) and hand your queued
+  text back for you to resend.
 - **Plain ↑ and Esc** to edit, as in Claude Code, alongside pi's Alt+↑. This is convenience, not a new capability.
 
 ## Install
@@ -57,6 +61,7 @@ Then `/reload`, or start a new session. It needs no settings change and works wi
 | Keep typing, pressing Enter each time | Each message joins the wait list. |
 | The agent finishes its current tool call | The whole list goes in as **one** message in the same request as the tool results, framed for the model as mid-task input. |
 | The agent finishes a reply without calling a tool | The list starts the next turn as an ordinary prompt, without the framing. |
+| **Ctrl+Enter** while the agent works | Whatever you've typed joins the queue, the current step is interrupted, and everything queued starts the next turn at once. The model is told it was interrupted. Where the terminal can't send Ctrl+Enter, use **Alt+S**. |
 | ↑ (cursor on the first line) or Esc, while messages wait | They come back into the editor, ahead of whatever you'd typed. Edit them and press Enter to queue them again. |
 | Esc with nothing waiting | Interrupts the run, as usual. |
 | The run is interrupted while messages wait | They come back into the editor instead of being sent. |
@@ -66,6 +71,7 @@ Under the hood it uses only public pi extension APIs:
 
 - the `input` event takes mid-turn messages into the extension's own queue;
 - `turn_end` sends the queue as one message with `sendUserMessage(…, { deliverAs: "steer" })`;
+- Ctrl+Enter aborts the run, and `agent_settled` sends the queue as the next prompt, framed as an interruption;
 - the `context` event adds the framing to that message for the model only, and does so deterministically, so prompt
   caching is unaffected;
 - a wrapped editor handles ↑ and Esc, and still wraps any custom editor another extension installed first.
@@ -81,6 +87,7 @@ and the text the model sees is original.
 |---|---|---|---|---|
 | When mid-turn messages are delivered | after the current tool batch | after the current tool batch | after the current tool batch | **after the current tool batch** |
 | How many at once | all | one | all | **all** |
+| Send now, interrupting the current step | Ctrl+Enter | Esc, then resend | Esc, then resend | **Ctrl+Enter** (or Alt+S) |
 | **Model is told they arrived mid-task** | **yes** | no | no | **yes** |
 | Your transcript shows your plain text | yes | yes | yes | **yes** |
 | Pull them back to edit without stopping the run | ↑ or Esc | Alt+↑ | Alt+↑ | **↑, Esc, or Alt+↑** |

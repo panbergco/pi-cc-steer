@@ -6,7 +6,8 @@
  *    tool boundary, inside the same request as the tool results;
  *  - the model sees each one framed as "sent while you were working — finish, then address it";
  *  - the person sees their own words, unframed;
- *  - ↑ (on the first line) or Esc pulls every queued message back into the editor to edit.
+ *  - ↑ (on the first line) or Esc pulls every queued message back into the editor to edit;
+ *  - Ctrl+Enter sends now: interrupt the current turn and deliver everything queued at once.
  */
 
 export interface Queued {
@@ -14,8 +15,22 @@ export interface Queued {
 	images: unknown[];
 }
 
-/** How a mid-turn batch reaches the model. The transcript keeps the plain text. */
-export function frame(text: string): string {
+/**
+ * How a batch reaches the model. The transcript keeps the plain text.
+ * - "mid-turn": delivered at a tool boundary while the agent kept working.
+ * - "interrupt": the person stopped the turn to send it (Ctrl+Enter). pi drops the aborted reply from
+ *   the model's context, so without this the model would not know it was cut off.
+ */
+export type Framing = "mid-turn" | "interrupt";
+
+export function frame(text: string, kind: Framing = "mid-turn"): string {
+	if (kind === "interrupt") {
+		return (
+			"<system-reminder>\nThe user interrupted your previous step to send the following:\n" +
+			text +
+			"\n\nYour previous step was stopped before it finished. Address this now; resume the earlier work only if it still fits.\n</system-reminder>"
+		);
+	}
 	return (
 		"<system-reminder>\nThe user sent the following while you were working:\n" +
 		text +
@@ -52,15 +67,16 @@ function textOf(content: unknown): string | null {
  * Frame the user messages that were delivered mid-turn. Pure and deterministic, so the same
  * transcript always produces the same request (prompt caching stays intact).
  */
-export function frameMidTurn<M extends Msg>(messages: M[], midTurn: Set<string>): M[] {
-	if (midTurn.size === 0) return messages;
+export function frameMidTurn<M extends Msg>(messages: M[], framed: Map<string, Framing>): M[] {
+	if (framed.size === 0) return messages;
 	return messages.map((m) => {
 		if (m.role !== "user") return m;
 		const text = textOf(m.content);
-		if (text === null || text === "" || !midTurn.has(text)) return m;
-		if (typeof m.content === "string") return { ...m, content: frame(text) };
+		const kind = text === null || text === "" ? undefined : framed.get(text);
+		if (text === null || kind === undefined) return m;
+		if (typeof m.content === "string") return { ...m, content: frame(text, kind) };
 		const others = (m.content as Block[]).filter((b) => b.type !== "text");
-		return { ...m, content: [{ type: "text", text: frame(text) }, ...others] };
+		return { ...m, content: [{ type: "text", text: frame(text, kind) }, ...others] };
 	});
 }
 
