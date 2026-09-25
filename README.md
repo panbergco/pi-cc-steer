@@ -72,8 +72,7 @@ Then `/reload`, or start a new session. It needs no settings change and works wi
 | **Ctrl+Enter** while the agent works, or **Esc** while messages wait | Whatever you've typed joins the queue, the current step is interrupted, a dim `Interrupted` line appears, and everything queued starts the next turn at once. A cut-off command shows its output and `[Interrupted: the user sent a new message]`; a cut-off reply keeps what it had written. The model is told it was interrupted. Where the terminal can't send Ctrl+Enter, use **Alt+S**. Also works during a manual `/compact`. |
 | ↑ (cursor on the first line) or Alt+↑, while messages wait | Text messages come back into the editor, ahead of whatever you'd typed. Edit them and press Enter to queue them again. Messages carrying images stay queued. |
 | Esc with nothing waiting | Interrupts the run, as usual. |
-| The run is interrupted some other way while messages wait (another extension, a command) | Text messages come back into the editor instead of being sent; messages carrying images are held and go with your next message. |
-| pi refuses to start the queued prompt (no model, no API key) | The messages come back into the editor with a warning, rather than being lost. |
+| The run is interrupted some other way while messages wait (another extension, a command) | Seen at the end of the turn: text messages come back into the editor instead of being sent; messages carrying images are held and go with the next message you send. |
 | `/command` or `!shell` while the agent works | Left to pi, exactly as without the extension. |
 
 Under the hood it uses only public pi extension APIs:
@@ -81,11 +80,12 @@ Under the hood it uses only public pi extension APIs:
 - the `input` event takes mid-turn messages into the extension's own queue;
 - `turn_end` sends the queue as one message with `sendUserMessage(…, { deliverAs: "steer" })`;
 - the `context` event adds the framing to that message for the model only. A framed message is identified by its
-  timestamp and text, so the same words sent at another time are never framed, and a framed message reads the same
-  in every later request (prompt caching stays intact);
-- send-now aborts the run; `tool_result` and `message_end` turn that abort, and only that abort, into an
-  "interrupted" hand-off, and `agent_settled` (or the end of a cancelled `/compact`) sends the queue as the next
-  prompt with a dim `Interrupted` marker that the model does not see;
+  timestamp and text, so the same words sent at another time are not framed, and a framed message reads the same in
+  every later request;
+- send-now aborts the run; `tool_result` and `message_end` relabel only an abort it caused (the run's abort signal is
+  set and the error is an abort message) as an "interrupted" hand-off, and `agent_settled` (or the end of a cancelled
+  `/compact`) sends the queue as the next prompt. The dim `Interrupted` marker is a session entry, so no model ever
+  sees it, compaction summaries included;
 - a wrapped editor handles Ctrl+Enter, Esc and ↑, and still wraps any custom editor another extension installed first.
 
 The logic lives in `steer.ts`, which has no pi imports and is covered by `npm test`. `index.ts` connects it to pi;
@@ -124,16 +124,24 @@ The small differences that remain:
 ## Known limits
 
 - **Cases that still show pi's red error on send-now:** the interruption lands while pi is starting a tool (before
-  the tool runs), or while the model is streaming a tool call, or during an automatic retry wait (pi reports the retry
-  as cancelled). pi-cc-steer only relabels the abort it caused, and these reach the screen without passing through
-  the hooks it can use.
-- **A cut-off tool keeps only the output in its final error.** pi's bash tool includes everything it printed; a
-  custom tool that streamed output and then reports only "Operation aborted" shows just the note.
-- **Timing during compaction or retry.** A message typed while pi compacts or retries waits for the next tool batch
-  to finish; native steering can sometimes reach the very next request.
+  the tool runs), or during an automatic retry wait (pi reports the retry as cancelled). A reply cut while the model
+  was writing a tool call is deliberately left to pi's own abort handling, so its tool card closes properly.
+- **A cut-off tool keeps only what its final error carries.** pi's bash tool keeps its final output (truncated if
+  long) and a reference to the full-output file; a custom tool that streamed output and then reports only
+  "Operation aborted" shows just the note.
+- **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
+  a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
+- **Nothing is persisted.** Queued and held messages live in memory, as pi's own queue does: `/reload`, exit or
+  switching sessions drops them. If pi refuses the queued prompt (no model, no API key), pi shows its error and the
+  text is not put back.
+- **Timing during compaction or retry.** A message typed while pi retries waits for the next tool batch to finish;
+  native steering can sometimes reach the very next request. During a manual `/compact`, Enter uses pi's own
+  compaction queue.
+- **Framing identity.** A batch is recognised by its text when it arrives, so another extension sending exactly the
+  same text at the same moment could take its framing. Sessions from 0.1.0–0.1.3 keep their earlier records, which
+  match by text alone.
 - **Editors.** An extension that replaces the editor after pi-cc-steer loads removes its keys; a modal (vim-style)
   editor loses Esc while messages wait.
-- **Older sessions.** Sessions from 0.1.0–0.1.3 keep their earlier framing records, which match by text alone.
 
 ## Works with
 

@@ -66,24 +66,27 @@ export function textOf(content: unknown): string | null {
 
 /**
  * Which delivered messages to frame. A message is identified by its timestamp AND its text, so an
- * identical message typed at another time (or in another branch) is never framed by accident, and
- * a framed message reads the same in every request (prompt caching stays intact).
+ * identical message typed at another time (or in another branch) is not framed by accident, and
+ * a framed message reads the same in every request.
  * `byText` only holds records written before timestamps were recorded (0.1.0–0.1.3).
  */
 export interface Framings {
-	byTs: Map<number, { text: string; kind: Framing }>;
+	byId: Map<string, Framing>;
 	byText: Map<string, Framing>;
 }
 
+export function messageId(timestamp: number, text: string): string {
+	return `${timestamp}\n${text}`;
+}
+
 export function framingOf(f: Framings, timestamp: number | undefined, text: string): Framing | undefined {
-	const hit = timestamp === undefined ? undefined : f.byTs.get(timestamp);
-	if (hit) return hit.text === text ? hit.kind : undefined;
-	return f.byText.get(text);
+	const hit = timestamp === undefined ? undefined : f.byId.get(messageId(timestamp, text));
+	return hit ?? f.byText.get(text);
 }
 
 /** Frame the user messages that were delivered as batches. Pure and deterministic. */
 export function frameMidTurn<M extends Msg>(messages: M[], f: Framings): M[] {
-	if (f.byTs.size === 0 && f.byText.size === 0) return messages;
+	if (f.byId.size === 0 && f.byText.size === 0) return messages;
 	return messages.map((m) => {
 		if (m.role !== "user") return m;
 		const text = textOf(m.content);

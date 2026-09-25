@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { batchContent, batchKey, frame, type Framings, frameMidTurn, INTERRUPTED_NOTE, interruptedOutput, isAbortError, isQueueable, popEditable } from "./steer.ts";
+import { batchContent, batchKey, frame, type Framings, frameMidTurn, INTERRUPTED_NOTE, interruptedOutput, isAbortError, isQueueable, messageId, popEditable } from "./steer.ts";
 
-const byText = (entries: [string, "mid-turn" | "interrupt"][]): Framings => ({ byTs: new Map(), byText: new Map(entries) });
+const byText = (entries: [string, "mid-turn" | "interrupt"][]): Framings => ({ byId: new Map(), byText: new Map(entries) });
 
 test("a batch is one message: one text block per queued message, images last", () => {
   const c = batchContent([{ text: "a", images: [] }, { text: "b", images: [{ type: "image", data: "x" }] }]);
@@ -58,7 +58,7 @@ test("a tool cut off by send-now keeps its output and reads as interrupted, not 
 });
 
 test("a batch is framed by identity: the same words sent at another time stay unframed", () => {
-  const f: Framings = { byTs: new Map([[2000, { text: "continue", kind: "mid-turn" }]]), byText: new Map() };
+  const f: Framings = { byId: new Map([[messageId(2000, "continue"), "mid-turn"]]), byText: new Map() };
   const msgs = [
     { role: "user", content: "continue", timestamp: 1000 },
     { role: "user", content: "continue", timestamp: 2000 },

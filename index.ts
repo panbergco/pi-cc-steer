@@ -11,8 +11,8 @@
  *   interruption shows as one dim "Interrupted" line, not as an error.
  * - If the agent finishes first, the held messages start the next turn together, unframed.
  * - ↑ on the first line, or pi's own Alt+↑, pulls every held message back into the editor. Esc with
- *   nothing held still interrupts, as before; any interruption other than send-now returns the held
- *   messages to the editor instead of sending them.
+ *   nothing held still interrupts, as before; an interruption other than send-now, seen at the end of a
+ *   turn, returns the held messages to the editor instead of sending them.
  *
  * Works without changing pi's `steeringMode`: the batch is one message, so one-at-a-time
  * delivers all of it. Commands (`/…`) and shell input (`!…`) keep pi's own handling.
@@ -28,6 +28,7 @@ import {
 	interruptedOutput,
 	isAbortError,
 	isQueueable,
+	messageId,
 	popEditable,
 	type Queued,
 	textOf,
@@ -41,16 +42,14 @@ const INSTALLED = Symbol.for("pi-cc-steer.editor");
 const SEND_NOW_KEYS = ["ctrl+enter", "alt+s"] as const;
 /** Marks a reply cut off by send-now, so its empty remains stay out of the model's context. */
 const CUT = "ccSteerInterrupted";
-/** How long a batch handed to pi as a new prompt may take to appear before it counts as not sent. */
-const DELIVERY_CHECK_MS = 3000;
 
-type Pending = { text: string; kind?: Framing; batch: Queued[]; how: "steer" | "prompt" };
+type Pending = { text: string; kind?: Framing };
 
 export default function (pi: ExtensionAPI) {
 	let queue: Queued[] = [];
 	/** Batches handed to pi and not yet seen arriving as a user message. */
 	let pending: Pending[] = [];
-	const framings: Framings = { byTs: new Map(), byText: new Map() };
+	const framings: Framings = { byId: new Map(), byText: new Map() };
 	/** Set by send-now: the run is being interrupted on purpose, so the queue goes out instead of back. */
 	let sendNow = false;
 	/** Set when the run was interrupted some other way: anything left queued waits for the person. */
@@ -88,25 +87,11 @@ export default function (pi: ExtensionAPI) {
 		if (queue.length === 0) return;
 		const batch = queue;
 		queue = [];
-		const entry: Pending = { text: batchKey(batch.map((q) => q.text)), kind, batch, how };
-		pending.push(entry);
+		pending.push({ text: batchKey(batch.map((q) => q.text)), kind });
 		const content = batchContent(batch) as Parameters<ExtensionAPI["sendUserMessage"]>[0];
+		// pi reports nothing back; if it refuses the prompt (no model, no key) it shows its own error.
 		pi.sendUserMessage(content, how === "steer" ? { deliverAs: "steer" } : undefined);
 		render(ctx);
-		if (how !== "prompt") return;
-		// sendUserMessage reports nothing back. If pi refused the prompt (no model, no key), the batch never
-		// appears as a message: give it back rather than lose it.
-		// ponytail: fixed delay; a delivery acknowledgement from pi would replace it if one is added.
-		setTimeout(() => {
-			try {
-				if (!pending.includes(entry) || !ctx.isIdle()) return;
-				pending = pending.filter((p) => p !== entry);
-				queue = [...entry.batch, ...queue];
-				if (popIntoEditor(ctx)) ctx.ui.notify("Queued messages could not be sent and are back in the editor", "warning");
-			} catch {
-				// session replaced meanwhile: nothing to restore into
-			}
-		}, DELIVERY_CHECK_MS);
 	};
 
 	/** Ctrl+Enter / Esc while the agent works: queue what is typed, then interrupt so everything goes now. */
@@ -130,9 +115,12 @@ export default function (pi: ExtensionAPI) {
 	const settle = (ctx: ExtensionContext) => {
 		const interrupted = sendNow;
 		sendNow = false;
-		pending = pending.filter((p) => p.how === "prompt"); // an undelivered steer went back to pi's own queue
+		// Whatever was handed to pi has arrived by now or never will (an undelivered steer went back to pi's own
+		// queue, a refused prompt was reported by pi): stale records must not claim a later identical message.
+		pending = [];
 		if (hold || queue.length === 0 || !ctx.isIdle()) return render(ctx);
-		if (interrupted) pi.sendMessage({ customType: MARK, content: "Interrupted", display: true });
+		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
+		if (interrupted) pi.appendEntry(MARK, {});
 		flush(ctx, "prompt", interrupted ? "interrupt" : undefined);
 	};
 
@@ -163,20 +151,20 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setEditorComponent(factory);
 	};
 
-	pi.registerMessageRenderer(MARK, (_message, _options, theme) => new Text(theme.fg("dim", "Interrupted"), 1, 0));
+	pi.registerEntryRenderer(MARK, (_entry, _options, theme) => new Text(theme.fg("dim", "Interrupted"), 1, 0));
 
 	pi.on("session_start", (_event, ctx) => {
 		queue = [];
 		pending = [];
 		sendNow = false;
 		hold = false;
-		framings.byTs.clear();
+		framings.byId.clear();
 		framings.byText.clear();
 		for (const entry of ctx.sessionManager.getEntries()) {
 			const e = entry as { type: string; customType?: string; data?: { key?: string; kind?: Framing; ts?: number } };
 			if (e.type !== "custom" || e.customType !== ENTRY || !e.data?.key) continue;
 			const kind = e.data.kind ?? "mid-turn";
-			if (typeof e.data.ts === "number") framings.byTs.set(e.data.ts, { text: e.data.key, kind });
+			if (typeof e.data.ts === "number") framings.byId.set(messageId(e.data.ts, e.data.key), kind);
 			else framings.byText.set(e.data.key, kind); // written by 0.1.0–0.1.3, before timestamps were kept
 		}
 		// After other extensions' session_start, so a custom editor installed there is wrapped too.
@@ -185,6 +173,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
+		if (event.source === "interactive" && !event.streamingBehavior && hold) {
+			hold = false; // the person started a new run: anything still held goes with it
+			render(ctx);
+		}
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {
 			return { action: "continue" };
 		}
@@ -211,19 +203,21 @@ export default function (pi: ExtensionAPI) {
 		flush(ctx, "steer", event.toolResults.length > 0 ? "mid-turn" : undefined);
 	});
 
-	pi.on("agent_start", () => {
-		hold = false; // the person started a new run: anything still held goes with it
-	});
-
 	// Anything still queued once pi has fully settled (after an interrupt, retries, compaction) starts the next turn.
 	pi.on("agent_settled", (_event, ctx) => settle(ctx));
 	// A send-now pressed during a manual /compact cancels the compaction, which ends without agent_settled.
-	pi.on("session_compact", (_event, ctx) => {
-		if (sendNow && ctx.isIdle()) settle(ctx);
-	});
-	pi.on("session_compact_failed", (_event, ctx) => {
-		if (sendNow && ctx.isIdle()) settle(ctx);
-	});
+	// pi may still be finishing the compaction when these fire, so wait for it to go idle.
+	const settleWhenIdle = (ctx: ExtensionContext, tries = 40) => {
+		try {
+			if (!sendNow) return;
+			if (ctx.isIdle()) return settle(ctx);
+			if (tries > 0) setTimeout(() => settleWhenIdle(ctx, tries - 1), 250);
+		} catch {
+			// session replaced meanwhile: its session_start resets everything
+		}
+	};
+	pi.on("session_compact", (_event, ctx) => settleWhenIdle(ctx));
+	pi.on("session_compact_failed", (_event, ctx) => settleWhenIdle(ctx));
 
 	// Send-now is a hand-off, not a failure. A tool cut off by it reports "interrupted", keeping any output
 	// it had produced, instead of a red "Command aborted". A real failure that coincides is left alone.
@@ -237,7 +231,7 @@ export default function (pi: ExtensionAPI) {
 		return { content: [{ type: "text", text: interruptedOutput(text) }], isError: false };
 	});
 
-	pi.on("message_end", (event) => {
+	pi.on("message_end", (event, ctx) => {
 		const m = event.message as {
 			role: string;
 			timestamp?: number;
@@ -249,11 +243,13 @@ export default function (pi: ExtensionAPI) {
 		// A batch arriving: from now on it is framed by its identity (timestamp + text), not by its text alone.
 		if (m.role === "user") {
 			const text = textOf(m.content);
-			const i = pending.findIndex((p) => p.text === text);
-			if (i === -1 || text === null) return;
+			if (text === null) return;
+			// pi may append notes to a prompt that carries images, so the batch is the start of the text.
+			const i = pending.findIndex((p) => text === p.text || text.startsWith(`${p.text}\n`));
+			if (i === -1) return;
 			const [p] = pending.splice(i, 1);
 			if (p.kind && typeof m.timestamp === "number") {
-				framings.byTs.set(m.timestamp, { text, kind: p.kind });
+				framings.byId.set(messageId(m.timestamp, text), p.kind);
 				pi.appendEntry(ENTRY, { key: text, kind: p.kind, ts: m.timestamp });
 			}
 			return;
@@ -262,8 +258,8 @@ export default function (pi: ExtensionAPI) {
 		// The reply send-now cut off would render as a red "Operation aborted" / "Error: … aborted". Keep the
 		// text it had streamed and let the run end quietly; settle() sends the queue. Left alone: a reply that
 		// failed for another reason, and one cut mid tool call (its tool cards need pi's own abort handling).
-		if (!sendNow || m.role !== "assistant") return;
-		const cut = m.stopReason === "aborted" || (m.stopReason === "error" && /\babort/i.test(m.errorMessage ?? ""));
+		if (!sendNow || m.role !== "assistant" || !ctx.signal?.aborted) return;
+		const cut = m.stopReason === "aborted" || (m.stopReason === "error" && isAbortError(m.errorMessage ?? ""));
 		if (!cut || (m.content ?? []).some((c) => c.type === "toolCall")) return;
 		const text = (m.content ?? []).filter((c) => c.type === "text" && (c.text ?? "").trim() !== "");
 		const { errorMessage: _drop, ...rest } = event.message as unknown as Record<string, unknown>;
@@ -271,11 +267,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("context", (event) => {
-		// Left out of the model's view: the on-screen "Interrupted" marker (the framing already says it), and a
-		// cut-off reply with nothing left, which no provider accepts; pi leaves aborted replies out natively too.
+		// Left out of the model's view: a cut-off reply with nothing left, which no provider accepts; pi leaves
+		// aborted replies out natively too.
 		const msgs = (event.messages as Array<Record<string, unknown>>).filter(
-			(m) =>
-				!(m.role === "custom" && m.customType === MARK) && !(m[CUT] && Array.isArray(m.content) && m.content.length === 0),
+			(m) => !(m[CUT] && Array.isArray(m.content) && m.content.length === 0),
 		);
 		const out = frameMidTurn(msgs as never[], framings);
 		if (out === (msgs as never[]) && msgs.length === event.messages.length) return;
