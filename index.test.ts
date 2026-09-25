@@ -36,5 +36,8 @@ test("after an interruption, held images ride in the next message the person sen
 	// the person sends a new message while idle: the held image rides in it
 	const r = handlers.input({ source: "interactive", text: "compare it with the old one" }, ctx);
 	assert.deepEqual(r, { action: "transform", text: "look at this\ncompare it with the old one", images: [img] });
+	// ...but stays held until that message arrives: if a later handler cancels it, the next attempt still carries it
+	assert.deepEqual(handlers.input({ source: "interactive", text: "compare it with the old one" }, ctx), r);
+	handlers.message_end({ message: { role: "user", content: r.text, timestamp: 1 } }, ctx);
 	assert.deepEqual(handlers.input({ source: "interactive", text: "next" }, ctx), { action: "continue" }, "nothing held any more");
 });

@@ -54,6 +54,8 @@ export default function (pi: ExtensionAPI) {
 	let sendNow = false;
 	/** Set when the run was interrupted some other way: anything left queued waits for the person. */
 	let hold = false;
+	/** Text of the next message carrying the held messages; they are dropped from the queue once it arrives. */
+	let merged: string | undefined;
 
 	const render = (ctx: ExtensionContext) => {
 		if (ctx.mode !== "tui") return;
@@ -179,6 +181,7 @@ export default function (pi: ExtensionAPI) {
 		pending = [];
 		sendNow = false;
 		hold = false;
+		merged = undefined;
 		framings.byId.clear();
 		framings.byText.clear();
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -197,18 +200,17 @@ export default function (pi: ExtensionAPI) {
 		// The person is sending again: anything still held goes with it. Not for an Alt+Enter follow-up, which pi
 		// delivers only after the run, so released images would arrive before the words that go with them.
 		if (event.source === "interactive" && hold && event.streamingBehavior !== "followUp" && isQueueable(event.text)) {
-			hold = false;
 			// Idle: this message starts the run, so the held messages ride in it rather than trailing behind it.
+			// They stay held until the message arrives: a later input handler may still cancel it.
 			if (!event.streamingBehavior && queue.length > 0) {
-				const held = queue;
-				queue = [];
-				render(ctx);
+				merged = batchKey([...queue.map((q) => q.text), event.text]);
 				return {
 					action: "transform",
-					text: batchKey([...held.map((q) => q.text), event.text]),
-					images: [...held.flatMap((q) => q.images), ...(event.images ?? [])] as typeof event.images,
+					text: merged,
+					images: [...queue.flatMap((q) => q.images), ...(event.images ?? [])] as typeof event.images,
 				};
 			}
+			hold = false;
 			render(ctx);
 		}
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {
@@ -266,6 +268,13 @@ export default function (pi: ExtensionAPI) {
 		if (m.role === "user") {
 			const text = textOf(m.content);
 			if (text === null) return;
+			if (merged !== undefined && (text === merged || text.startsWith(`${merged}\n`))) {
+				merged = undefined;
+				queue = []; // the held messages arrived inside this one
+				hold = false;
+				render(ctx);
+				return;
+			}
 			// pi may append notes to a prompt that carries images, so for those the batch is the start of the text.
 			const i = pending.findIndex((p) => text === p.text || (p.images && text.startsWith(`${p.text}\n`)));
 			if (i === -1) return;
