@@ -84,7 +84,7 @@ Under the hood it uses only public pi extension APIs:
   every later request;
 - send-now aborts the run; `tool_result` and `message_end` relabel only an abort it caused (the run's abort signal is
   set and the error is an abort message) as an "interrupted" hand-off, and `agent_settled` (or the end of a cancelled
-  `/compact`) sends the queue as the next prompt. The dim `Interrupted` marker is a session entry, so no model ever
+  `/compact`, noticed once pi has stayed idle) sends the queue as the next prompt. The dim `Interrupted` marker is a session entry, so no model ever
   sees it, compaction summaries included;
 - a wrapped editor handles Ctrl+Enter, Esc and ↑, and still wraps any custom editor another extension installed first.
 
@@ -137,9 +137,12 @@ The small differences that remain:
 - **Timing during compaction or retry.** A message typed while pi retries waits for the next tool batch to finish;
   native steering can sometimes reach the very next request. During a manual `/compact`, Enter uses pi's own
   compaction queue.
-- **Framing identity.** A batch is recognised by its text when it arrives, so another extension sending exactly the
-  same text at the same moment could take its framing. Sessions from 0.1.0–0.1.3 keep their earlier records, which
-  match by text alone.
+- **Races with other extensions.** A batch is recognised by its text when it arrives. Another extension sending the
+  same text at the same moment can take its framing, and if pi refuses a send-now prompt, its unused record can
+  later frame an identical message you type.
+- **Older sessions.** Sessions from 0.1.0–0.1.3 keep their framing records, which match by text alone. Sessions from
+  0.1.4 (GitHub only) stored the `Interrupted` marker as a message: it is kept out of requests, not out of compaction
+  summaries.
 - **Editors.** An extension that replaces the editor after pi-cc-steer loads removes its keys; a modal (vim-style)
   editor loses Esc while messages wait.
 
@@ -152,8 +155,7 @@ It does **not** combine with other extensions that take over mid-turn input, suc
 the richer choice if you want a visible, reorderable queue with separate steering and follow-up lanes. pi-cc-steer is
 the smaller one (about 400 lines) if you want Claude Code's behaviour and nothing else.
 
-Only interactive input is affected. RPC mode, print mode and messages sent by other extensions are never queued or
-framed.
+Only interactive input is affected. RPC mode, print mode and messages sent by other extensions are never queued.
 
 ## Development
 

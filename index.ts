@@ -43,7 +43,7 @@ const SEND_NOW_KEYS = ["ctrl+enter", "alt+s"] as const;
 /** Marks a reply cut off by send-now, so its empty remains stay out of the model's context. */
 const CUT = "ccSteerInterrupted";
 
-type Pending = { text: string; kind?: Framing };
+type Pending = { text: string; kind?: Framing; how: "steer" | "prompt"; images: boolean };
 
 export default function (pi: ExtensionAPI) {
 	let queue: Queued[] = [];
@@ -87,7 +87,7 @@ export default function (pi: ExtensionAPI) {
 		if (queue.length === 0) return;
 		const batch = queue;
 		queue = [];
-		pending.push({ text: batchKey(batch.map((q) => q.text)), kind });
+		pending.push({ text: batchKey(batch.map((q) => q.text)), kind, how, images: batch.some((q) => q.images.length > 0) });
 		const content = batchContent(batch) as Parameters<ExtensionAPI["sendUserMessage"]>[0];
 		// pi reports nothing back; if it refuses the prompt (no model, no key) it shows its own error.
 		pi.sendUserMessage(content, how === "steer" ? { deliverAs: "steer" } : undefined);
@@ -108,16 +108,37 @@ export default function (pi: ExtensionAPI) {
 		hold = false;
 		render(ctx);
 		ctx.abort();
+		watch(ctx);
 		return true;
+	};
+
+	/**
+	 * Normally agent_settled ends a send-now. Some stops never emit it (a /compact cancelled late, another
+	 * extension still busy in a compaction hook), so once pi has stayed idle for two checks in a row, settle anyway.
+	 * ponytail: polling; an "operation ended" event from pi would replace it if one is added.
+	 */
+	const watch = (ctx: ExtensionContext) => {
+		let idleChecks = 0;
+		const timer = setInterval(() => {
+			try {
+				if (!sendNow) return clearInterval(timer);
+				idleChecks = ctx.isIdle() ? idleChecks + 1 : 0;
+				if (idleChecks < 2) return;
+				clearInterval(timer);
+				settle(ctx);
+			} catch {
+				clearInterval(timer); // session replaced: its session_start resets everything
+			}
+		}, 500);
 	};
 
 	/** The run has stopped: send what send-now was waiting for, or keep holding after another interruption. */
 	const settle = (ctx: ExtensionContext) => {
 		const interrupted = sendNow;
 		sendNow = false;
-		// Whatever was handed to pi has arrived by now or never will (an undelivered steer went back to pi's own
-		// queue, a refused prompt was reported by pi): stale records must not claim a later identical message.
-		pending = [];
+		// An undelivered steer went back to pi's own queue when the run ended: drop its record so it cannot claim a
+		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
+		pending = pending.filter((p) => p.how === "prompt").slice(-5);
 		if (hold || queue.length === 0 || !ctx.isIdle()) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});
@@ -173,8 +194,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
-		if (event.source === "interactive" && !event.streamingBehavior && hold) {
-			hold = false; // the person started a new run: anything still held goes with it
+		if (event.source === "interactive" && hold) {
+			hold = false; // the person is typing again: anything still held goes with what they send
 			render(ctx);
 		}
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {
@@ -205,19 +226,6 @@ export default function (pi: ExtensionAPI) {
 
 	// Anything still queued once pi has fully settled (after an interrupt, retries, compaction) starts the next turn.
 	pi.on("agent_settled", (_event, ctx) => settle(ctx));
-	// A send-now pressed during a manual /compact cancels the compaction, which ends without agent_settled.
-	// pi may still be finishing the compaction when these fire, so wait for it to go idle.
-	const settleWhenIdle = (ctx: ExtensionContext, tries = 40) => {
-		try {
-			if (!sendNow) return;
-			if (ctx.isIdle()) return settle(ctx);
-			if (tries > 0) setTimeout(() => settleWhenIdle(ctx, tries - 1), 250);
-		} catch {
-			// session replaced meanwhile: its session_start resets everything
-		}
-	};
-	pi.on("session_compact", (_event, ctx) => settleWhenIdle(ctx));
-	pi.on("session_compact_failed", (_event, ctx) => settleWhenIdle(ctx));
 
 	// Send-now is a hand-off, not a failure. A tool cut off by it reports "interrupted", keeping any output
 	// it had produced, instead of a red "Command aborted". A real failure that coincides is left alone.
@@ -228,7 +236,8 @@ export default function (pi: ExtensionAPI) {
 			.map((c) => (c as { text: string }).text)
 			.join("\n");
 		if (!isAbortError(text)) return;
-		return { content: [{ type: "text", text: interruptedOutput(text) }], isError: false };
+		const others = event.content.filter((c) => c.type !== "text");
+		return { content: [{ type: "text", text: interruptedOutput(text) }, ...others], isError: false };
 	});
 
 	pi.on("message_end", (event, ctx) => {
@@ -244,8 +253,8 @@ export default function (pi: ExtensionAPI) {
 		if (m.role === "user") {
 			const text = textOf(m.content);
 			if (text === null) return;
-			// pi may append notes to a prompt that carries images, so the batch is the start of the text.
-			const i = pending.findIndex((p) => text === p.text || text.startsWith(`${p.text}\n`));
+			// pi may append notes to a prompt that carries images, so for those the batch is the start of the text.
+			const i = pending.findIndex((p) => text === p.text || (p.images && text.startsWith(`${p.text}\n`)));
 			if (i === -1) return;
 			const [p] = pending.splice(i, 1);
 			if (p.kind && typeof m.timestamp === "number") {
@@ -267,10 +276,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("context", (event) => {
-		// Left out of the model's view: a cut-off reply with nothing left, which no provider accepts; pi leaves
-		// aborted replies out natively too.
+		// Left out of the model's view: a cut-off reply with nothing left, which no provider accepts (pi leaves
+		// aborted replies out natively too), and "Interrupted" markers that 0.1.4 stored as custom messages.
 		const msgs = (event.messages as Array<Record<string, unknown>>).filter(
-			(m) => !(m[CUT] && Array.isArray(m.content) && m.content.length === 0),
+			(m) =>
+				!(m[CUT] && Array.isArray(m.content) && m.content.length === 0) &&
+				!(m.role === "custom" && m.customType === MARK),
 		);
 		const out = frameMidTurn(msgs as never[], framings);
 		if (out === (msgs as never[]) && msgs.length === event.messages.length) return;
