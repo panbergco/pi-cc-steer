@@ -18,10 +18,15 @@ the editor while they wait.
 
 ![The waiting messages pulled back into the editor](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/2-edit.png)
 
-**3 · Delivered together.** When `lint` finishes they go in as one message. The model plans the tests "with build skip",
-and ends with the three-line summary that was asked for, including the largest file.
+**3 · Delivered together.** When `lint` finishes they go in as one message. The model plans "test execution before
+build", then ends with the three-line summary that was asked for, including the largest file.
 
 ![The messages delivered as one and every point answered](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/3-delivered.png)
+
+**4 · Send now.** A message queued while `lint` runs, then Esc: the command stops and reads "interrupted", one dim
+`Interrupted` line appears, and the new instruction runs straight away.
+
+![Esc sends the queued message now: lint is interrupted and the tests run](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/4-send-now.png)
 
 ## Do you need it?
 
