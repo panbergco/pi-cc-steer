@@ -12,7 +12,7 @@
  * - If the agent finishes first, the held messages start the next turn together, unframed.
  * - ↑ on the first line, or pi's own Alt+↑, pulls every held message back into the editor. Esc with
  *   nothing held still interrupts, as before; an interruption other than send-now, seen at the end of a
- *   turn, returns the held messages to the editor instead of sending them.
+ *   turn, returns the held messages' text to the editor instead of sending them, as pi does with its own queue.
  *
  * Works without changing pi's `steeringMode`: the batch is one message, so one-at-a-time
  * delivers all of it. Commands (`/…`) and shell input (`!…`) keep pi's own handling.
@@ -29,6 +29,7 @@ import {
 	isAbortError,
 	isQueueable,
 	messageId,
+	popAll,
 	popEditable,
 	type Queued,
 	textOf,
@@ -52,10 +53,6 @@ export default function (pi: ExtensionAPI) {
 	const framings: Framings = { byId: new Map(), byText: new Map() };
 	/** Set by send-now: the run is being interrupted on purpose, so the queue goes out instead of back. */
 	let sendNow = false;
-	/** Set when the run was interrupted some other way: anything left queued waits for the person. */
-	let hold = false;
-	/** Text of the next message carrying the held messages; they are dropped from the queue once it arrives. */
-	let merged: string | undefined;
 
 	const render = (ctx: ExtensionContext) => {
 		if (ctx.mode !== "tui") return;
@@ -66,11 +63,7 @@ export default function (pi: ExtensionAPI) {
 			const img = q.images.length > 0 ? ` [+${q.images.length} image]` : "";
 			return ctx.ui.theme.fg("accent", "↳ ") + first + more + img;
 		});
-		const hint = sendNow
-			? "  sending now…"
-			: hold
-				? "  held · sends with your next message · ↑ to edit"
-				: "  sends at the next tool boundary · ctrl+enter or esc to send now · ↑ to edit";
+		const hint = sendNow ? "  sending now…" : "  sends at the next tool boundary · ctrl+enter or esc to send now · ↑ to edit";
 		lines.push(ctx.ui.theme.fg("dim", hint));
 		ctx.ui.setWidget(WIDGET, lines);
 	};
@@ -107,7 +100,6 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (queue.length === 0) return false;
 		sendNow = true;
-		hold = false;
 		render(ctx);
 		ctx.abort();
 		watch(ctx);
@@ -134,14 +126,14 @@ export default function (pi: ExtensionAPI) {
 		}, 500);
 	};
 
-	/** The run has stopped: send what send-now was waiting for, or keep holding after another interruption. */
+	/** The run has stopped: send what send-now was waiting for, or anything typed after the last turn ended. */
 	const settle = (ctx: ExtensionContext) => {
 		const interrupted = sendNow;
 		sendNow = false;
 		// An undelivered steer went back to pi's own queue when the run ended: drop its record so it cannot claim a
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
 		pending = pending.filter((p) => p.how === "prompt");
-		if (hold || queue.length === 0 || !ctx.isIdle()) return render(ctx);
+		if (queue.length === 0 || !ctx.isIdle()) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});
 		flush(ctx, "prompt", interrupted ? "interrupt" : undefined);
@@ -160,7 +152,7 @@ export default function (pi: ExtensionAPI) {
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
 					// Esc with messages waiting sends them now, as in Claude Code (a bare Esc still just interrupts).
-					if (!hold && keybindings.matches(data, "app.interrupt") && sendNowFromEditor(ctx)) return;
+					if (keybindings.matches(data, "app.interrupt") && sendNowFromEditor(ctx)) return;
 					const up = keybindings.matches(data, "tui.editor.cursorUp") && (e.getCursor?.().line ?? 0) === 0;
 					// pi's own "restore queued messages" key (Alt+↑, Alt+Q on Windows): the messages live here, not in pi's queue.
 					const dequeue = keybindings.matches(data, "app.message.dequeue");
@@ -180,8 +172,7 @@ export default function (pi: ExtensionAPI) {
 		queue = [];
 		pending = [];
 		sendNow = false;
-		hold = false;
-		merged = undefined;
+
 		framings.byId.clear();
 		framings.byText.clear();
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -197,22 +188,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
-		// The person is sending again: anything still held goes with it. Not for an Alt+Enter follow-up, which pi
-		// delivers only after the run, so released images would arrive before the words that go with them.
-		if (event.source === "interactive" && hold && event.streamingBehavior !== "followUp" && isQueueable(event.text)) {
-			// Idle: this message starts the run, so the held messages ride in it rather than trailing behind it.
-			// They stay held until the message arrives: a later input handler may still cancel it.
-			if (!event.streamingBehavior && queue.length > 0) {
-				merged = batchKey([...queue.map((q) => q.text), event.text]);
-				return {
-					action: "transform",
-					text: merged,
-					images: [...queue.flatMap((q) => q.images), ...(event.images ?? [])] as typeof event.images,
-				};
-			}
-			hold = false;
-			render(ctx);
-		}
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {
 			return { action: "continue" };
 		}
@@ -222,16 +197,23 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", (event, ctx) => {
-		if (queue.length === 0 || hold) return;
+		if (queue.length === 0) return;
 		// Send-now in progress: the run is being cancelled, so anything sent into it now would be cancelled too.
 		if (sendNow) return; // settle() sends the queue once the run has stopped
 		const stop = (event.message as { stopReason?: string }).stopReason;
 		// An aborted TOOL ends the turn as "toolUse", not "aborted" (measured 2026-09-25): check the signal too.
 		if (stop === "aborted" || ctx.signal?.aborted) {
-			// Interrupted some other way: give the person their text back rather than sending it.
-			hold = true;
-			if (popIntoEditor(ctx)) ctx.ui.notify("Queued messages returned to the editor", "info");
+			// Interrupted some other way: give the person their text back rather than sending it, as pi does.
+			const { text, droppedImages } = popAll(queue, ctx.ui.getEditorText());
+			queue = [];
+			ctx.ui.setEditorText(text);
 			render(ctx);
+			ctx.ui.notify(
+				droppedImages > 0
+					? `Queued messages returned to the editor; ${droppedImages} attached image(s) dropped, paste them again`
+					: "Queued messages returned to the editor",
+				droppedImages > 0 ? "warning" : "info",
+			);
 			return;
 		}
 		if (stop !== "toolUse" && stop !== "stop") return; // error or length: pi decides retry first
@@ -268,13 +250,6 @@ export default function (pi: ExtensionAPI) {
 		if (m.role === "user") {
 			const text = textOf(m.content);
 			if (text === null) return;
-			if (merged !== undefined && (text === merged || text.startsWith(`${merged}\n`))) {
-				merged = undefined;
-				queue = []; // the held messages arrived inside this one
-				hold = false;
-				render(ctx);
-				return;
-			}
 			// pi may append notes to a prompt that carries images, so for those the batch is the start of the text.
 			const i = pending.findIndex((p) => text === p.text || (p.images && text.startsWith(`${p.text}\n`)));
 			if (i === -1) return;

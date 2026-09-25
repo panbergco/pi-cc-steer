@@ -72,7 +72,7 @@ Then `/reload`, or start a new session. It needs no settings change and works wi
 | **Ctrl+Enter** while the agent works, or **Esc** while messages wait | Whatever you've typed joins the queue, the current step is interrupted, a dim `Interrupted` line appears, and everything queued starts the next turn at once. A cut-off command shows its output and `[Interrupted: the user sent a new message]`; a cut-off reply keeps what it had written. The model is told it was interrupted. Where the terminal can't send Ctrl+Enter, use **Alt+S**. Also works during a manual `/compact`. |
 | ↑ (cursor on the first line) or Alt+↑, while messages wait | Text messages come back into the editor, ahead of whatever you'd typed. Edit them and press Enter to queue them again. Messages carrying images stay queued. |
 | Esc with nothing waiting | Interrupts the run, as usual. |
-| The run is interrupted some other way while messages wait (another extension, a command) | Seen at the end of the turn: text messages come back into the editor instead of being sent; messages carrying images are held and ride in the next message you send (not in a command or an Alt+Enter follow-up). |
+| The run is interrupted some other way while messages wait (another extension, a command) | Seen at the end of the turn: their text comes back into the editor instead of being sent, as pi does with its own queue. Attached images are dropped with a warning (pi drops them too); paste them again. |
 | `/command` or `!shell` while the agent works | Left to pi, exactly as without the extension. |
 
 Under the hood it uses only public pi extension APIs:
@@ -131,7 +131,7 @@ The small differences that remain:
   "Operation aborted" shows just the note.
 - **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
-- **Nothing is persisted.** Queued and held messages live in memory, as pi's own queue does: `/reload`, exit or
+- **Nothing is persisted.** Queued messages live in memory, as pi's own queue does: `/reload`, exit or
   switching sessions drops them. If pi refuses the queued prompt (no model, no API key), pi shows its error and the
   text is not put back.
 - **Timing during compaction or retry.** A message typed while pi retries waits for the next tool batch to finish;

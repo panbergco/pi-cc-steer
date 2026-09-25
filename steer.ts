@@ -111,6 +111,17 @@ export function popEditable(queue: Queued[], current: string): { text: string; k
 	};
 }
 
+/**
+ * After an interruption that is not a send-now: everything goes back into the editor as text, as pi does with its
+ * own queue. Images cannot be put back into the editor, so they are dropped (pi drops them too) and counted.
+ */
+export function popAll(queue: Queued[], current: string): { text: string; droppedImages: number } {
+	return {
+		text: [...queue.map((q) => q.text), current].filter((t) => t.trim() !== "").join("\n"),
+		droppedImages: queue.reduce((n, q) => n + q.images.length, 0),
+	};
+}
+
 /** Whether typed input belongs in this queue. Commands and shell input keep pi's own handling. */
 export function isQueueable(text: string): boolean {
 	const t = text.trimStart();

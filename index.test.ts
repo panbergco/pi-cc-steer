@@ -3,9 +3,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import ext from "./index.ts";
 
-test("after an interruption, held images ride in the next message the person sends; commands and follow-ups do not take them", () => {
+function setup() {
 	const handlers: Record<string, Function> = {};
 	const sent: unknown[] = [];
+	const notes: string[] = [];
 	const pi: any = {
 		on: (e: string, h: Function) => (handlers[e] = h),
 		registerEntryRenderer() {},
@@ -13,31 +14,47 @@ test("after an interruption, held images ride in the next message the person sen
 		sendUserMessage: (c: unknown) => sent.push(c),
 	};
 	ext(pi);
-	let idle = false, editor = "";
+	const state = { idle: false, editor: "" };
 	const ctx: any = {
-		mode: "tui", isIdle: () => idle, signal: { aborted: true },
-		ui: { setWidget() {}, notify() {}, getEditorText: () => editor, setEditorText: (t: string) => (editor = t), theme: { fg: (_c: string, t: string) => t }, getEditorComponent() {}, setEditorComponent() {} },
+		mode: "tui",
+		isIdle: () => state.idle,
+		signal: { aborted: false },
+		ui: {
+			setWidget() {},
+			notify: (m: string) => notes.push(m),
+			getEditorText: () => state.editor,
+			setEditorText: (t: string) => (state.editor = t),
+			theme: { fg: (_c: string, t: string) => t },
+			getEditorComponent() {},
+			setEditorComponent() {},
+		},
 		sessionManager: { getEntries: () => [] },
 	};
-	const img = { type: "image", data: "x", mimeType: "image/png" };
 	handlers.session_start({}, ctx);
-	// mid-run: an image message and a text message are queued
-	assert.deepEqual(handlers.input({ source: "interactive", streamingBehavior: "steer", text: "look at this", images: [img] }, ctx), { action: "handled" });
+	return { handlers, sent, notes, state, ctx };
+}
+
+const img = { type: "image", data: "x", mimeType: "image/png" };
+
+test("messages typed mid-turn go in together at the next tool boundary, as one steer", () => {
+	const { handlers, sent, ctx } = setup();
+	handlers.input({ source: "interactive", streamingBehavior: "steer", text: "use pnpm" }, ctx);
+	handlers.input({ source: "interactive", streamingBehavior: "steer", text: "and add a test" }, ctx);
+	assert.equal(sent.length, 0, "held while the tool runs");
+	handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, ctx);
+	assert.deepEqual(sent, [[{ type: "text", text: "use pnpm" }, { type: "text", text: "and add a test" }]]);
+});
+
+test("an interruption that is not a send-now returns the text to the editor, drops images with a warning, sends nothing", () => {
+	const { handlers, sent, notes, state, ctx } = setup();
+	handlers.input({ source: "interactive", streamingBehavior: "steer", text: "look at this", images: [img] }, ctx);
 	handlers.input({ source: "interactive", streamingBehavior: "steer", text: "and fix it" }, ctx);
-	// another extension aborts: text returns to the editor, the image message is held, nothing is sent
-	handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, ctx);
-	assert.equal(editor, "and fix it");
-	idle = true;
+	state.editor = "draft";
+	ctx.signal.aborted = true;
+	handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, ctx);
+	assert.equal(state.editor, "look at this\nand fix it\ndraft");
+	assert.match(notes.at(-1)!, /1 attached image\(s\) dropped/);
+	state.idle = true;
 	handlers.agent_settled({}, ctx);
-	assert.equal(sent.length, 0, "held, not sent on settle");
-	// a /command or an Alt+Enter follow-up does not take the held messages
-	assert.deepEqual(handlers.input({ source: "interactive", text: "/model" }, ctx), { action: "continue" });
-	assert.deepEqual(handlers.input({ source: "interactive", streamingBehavior: "followUp", text: "after that, summarise" }, ctx), { action: "continue" });
-	// the person sends a new message while idle: the held image rides in it
-	const r = handlers.input({ source: "interactive", text: "compare it with the old one" }, ctx);
-	assert.deepEqual(r, { action: "transform", text: "look at this\ncompare it with the old one", images: [img] });
-	// ...but stays held until that message arrives: if a later handler cancels it, the next attempt still carries it
-	assert.deepEqual(handlers.input({ source: "interactive", text: "compare it with the old one" }, ctx), r);
-	handlers.message_end({ message: { role: "user", content: r.text, timestamp: 1 } }, ctx);
-	assert.deepEqual(handlers.input({ source: "interactive", text: "next" }, ctx), { action: "continue" }, "nothing held any more");
+	assert.equal(sent.length, 0, "nothing sent after the person interrupted");
 });
