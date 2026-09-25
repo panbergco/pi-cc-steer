@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { batchContent, batchKey, frame, frameMidTurn, INTERRUPTED_NOTE, interruptedOutput, isQueueable, popEditable } from "./steer.ts";
+import { batchContent, batchKey, frame, type Framings, frameMidTurn, INTERRUPTED_NOTE, interruptedOutput, isAbortError, isQueueable, popEditable } from "./steer.ts";
+
+const byText = (entries: [string, "mid-turn" | "interrupt"][]): Framings => ({ byTs: new Map(), byText: new Map(entries) });
 
 test("a batch is one message: one text block per queued message, images last", () => {
   const c = batchContent([{ text: "a", images: [] }, { text: "b", images: [{ type: "image", data: "x" }] }]);
@@ -8,7 +10,7 @@ test("a batch is one message: one text block per queued message, images last", (
 });
 
 test("only the delivered mid-turn batch is framed, whether pi kept its blocks or joined them", () => {
-  const mid = new Map([[batchKey(["fix the test", "also rename it"]), "mid-turn" as const]]);
+  const mid = byText([[batchKey(["fix the test", "also rename it"]), "mid-turn"]]);
   const msgs = [
     { role: "user", content: "hello" },
     { role: "user", content: [{ type: "text", text: "fix the test" }, { type: "text", text: "also rename it" }] },
@@ -24,7 +26,7 @@ test("only the delivered mid-turn batch is framed, whether pi kept its blocks or
   assert.deepEqual(frameMidTurn(msgs, mid), out);
 });
 
-test("up/esc pulls text-only messages ahead of the draft; image messages stay queued", () => {
+test("up pulls text-only messages ahead of the draft; image messages stay queued", () => {
   const img = { text: "see this", images: [{}] };
   const r = popEditable([{ text: "one", images: [] }, img, { text: "two", images: [] }], "draft");
   assert.deepEqual(r, { text: "one\ntwo\ndraft", kept: [img] });
@@ -38,7 +40,7 @@ test("commands and shell input are left to pi", () => {
 });
 
 test("an interrupted batch is framed as an interruption, a mid-turn one as mid-turn", () => {
-  const framed = new Map([["stop, use pnpm", "interrupt" as const], ["also add a test", "mid-turn" as const]]);
+  const framed = byText([["stop, use pnpm", "interrupt"], ["also add a test", "mid-turn"]]);
   const out = frameMidTurn([
     { role: "user", content: "stop, use pnpm" },
     { role: "user", content: "also add a test" },
@@ -53,4 +55,23 @@ test("a tool cut off by send-now keeps its output and reads as interrupted, not 
   assert.equal(interruptedOutput("tick 1\ntick 2\n\nCommand aborted"), "tick 1\ntick 2\n\n" + INTERRUPTED_NOTE);
   assert.equal(interruptedOutput("Operation aborted"), INTERRUPTED_NOTE);
   assert.equal(interruptedOutput("partial\nabortedness is a word"), "partial\nabortedness is a word\n\n" + INTERRUPTED_NOTE);
+});
+
+test("a batch is framed by identity: the same words sent at another time stay unframed", () => {
+  const f: Framings = { byTs: new Map([[2000, { text: "continue", kind: "mid-turn" }]]), byText: new Map() };
+  const msgs = [
+    { role: "user", content: "continue", timestamp: 1000 },
+    { role: "user", content: "continue", timestamp: 2000 },
+    { role: "user", content: "continue", timestamp: 3000 },
+    { role: "user", content: "something else", timestamp: 2000 },
+  ];
+  const out = frameMidTurn(msgs, f);
+  assert.deepEqual(out.map((m) => m.content), ["continue", frame("continue"), "continue", "something else"]);
+});
+
+test("only the abort itself counts as an interruption; a real failure is left as an error", () => {
+  assert.equal(isAbortError("tick 1\n\nCommand aborted"), true);
+  assert.equal(isAbortError("This operation was aborted"), true);
+  assert.equal(isAbortError("EACCES: permission denied, open 'x'"), false);
+  assert.equal(isAbortError("Command aborted by policy: rm -rf is blocked\nexit 1"), false);
 });

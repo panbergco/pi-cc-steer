@@ -1,13 +1,14 @@
 /**
  * Pure queue logic for pi-cc-steer: no pi imports, so it can be tested with plain `node --test`.
  *
- * The behaviour it serves, observed in Claude Code (studied, not copied):
+ * The behaviour it serves, read from Claude Code's source (studied, not copied):
  *  - messages typed while the agent works are held, then ALL delivered together at the next
  *    tool boundary, inside the same request as the tool results;
- *  - the model sees each one framed as "sent while you were working — finish, then address it";
+ *  - the model sees them framed as "sent while you were working — address it once your current task
+ *    is done" (Claude Code: utils/messages.ts, the 'human' origin of its queued-message wrapper);
  *  - the person sees their own words, unframed;
- *  - ↑ (on the first line) or Esc pulls every queued message back into the editor to edit;
- *  - Ctrl+Enter sends now: interrupt the current turn and deliver everything queued at once.
+ *  - ↑ pulls every queued message back into the editor to edit;
+ *  - Esc or Ctrl+Enter sends now: interrupt the current turn and deliver everything queued at once.
  */
 
 export interface Queued {
@@ -18,8 +19,8 @@ export interface Queued {
 /**
  * How a batch reaches the model. The transcript keeps the plain text.
  * - "mid-turn": delivered at a tool boundary while the agent kept working.
- * - "interrupt": the person stopped the turn to send it (Ctrl+Enter). pi drops the aborted reply from
- *   the model's context, so without this the model would not know it was cut off.
+ * - "interrupt": the person stopped the turn to send it. pi drops the aborted reply from the
+ *   model's context, so without this the model would not know it was cut off.
  */
 export type Framing = "mid-turn" | "interrupt";
 
@@ -32,9 +33,9 @@ export function frame(text: string, kind: Framing = "mid-turn"): string {
 		);
 	}
 	return (
-		"<system-reminder>\nThe user sent the following while you were working:\n" +
+		"<system-reminder>\nThe user sent this new message while you were working:\n" +
 		text +
-		"\n\nFinish the step you are on, then address every point above before you finish. Do not ignore it.\n</system-reminder>"
+		"\n\nOnce your current task is complete, you must respond to it. Do not ignore it.\n</system-reminder>"
 	);
 }
 
@@ -47,32 +48,46 @@ export function batchContent(queue: Queued[]): Array<{ type: "text"; text: strin
 }
 
 /**
- * Stable identity of a delivered batch. pi joins a message's text blocks with "\n" when it stores
- * them (measured 2026-09-24: three blocks came back as one), so the key is the joined text.
+ * Text of a delivered batch. pi joins a message's text blocks with "\n" when it stores them
+ * (measured 2026-09-24: three blocks came back as one), so this is how the batch reads back.
  */
 export function batchKey(texts: string[]): string {
 	return texts.join("\n");
 }
 
 type Block = { type: string; text?: string };
-type Msg = { role: string; content: unknown };
+type Msg = { role: string; content: unknown; timestamp?: number };
 
-function textOf(content: unknown): string | null {
+export function textOf(content: unknown): string | null {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return null;
 	return (content as Block[]).filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n");
 }
 
 /**
- * Frame the user messages that were delivered mid-turn. Pure and deterministic, so the same
- * transcript always produces the same request (prompt caching stays intact).
+ * Which delivered messages to frame. A message is identified by its timestamp AND its text, so an
+ * identical message typed at another time (or in another branch) is never framed by accident, and
+ * a framed message reads the same in every request (prompt caching stays intact).
+ * `byText` only holds records written before timestamps were recorded (0.1.0–0.1.3).
  */
-export function frameMidTurn<M extends Msg>(messages: M[], framed: Map<string, Framing>): M[] {
-	if (framed.size === 0) return messages;
+export interface Framings {
+	byTs: Map<number, { text: string; kind: Framing }>;
+	byText: Map<string, Framing>;
+}
+
+export function framingOf(f: Framings, timestamp: number | undefined, text: string): Framing | undefined {
+	const hit = timestamp === undefined ? undefined : f.byTs.get(timestamp);
+	if (hit) return hit.text === text ? hit.kind : undefined;
+	return f.byText.get(text);
+}
+
+/** Frame the user messages that were delivered as batches. Pure and deterministic. */
+export function frameMidTurn<M extends Msg>(messages: M[], f: Framings): M[] {
+	if (f.byTs.size === 0 && f.byText.size === 0) return messages;
 	return messages.map((m) => {
 		if (m.role !== "user") return m;
 		const text = textOf(m.content);
-		const kind = text === null || text === "" ? undefined : framed.get(text);
+		const kind = text ? framingOf(f, m.timestamp, text) : undefined;
 		if (text === null || kind === undefined) return m;
 		if (typeof m.content === "string") return { ...m, content: frame(text, kind) };
 		const others = (m.content as Block[]).filter((b) => b.type !== "text");
@@ -99,9 +114,16 @@ export function isQueueable(text: string): boolean {
 	return t !== "" && !t.startsWith("/") && !t.startsWith("!");
 }
 
+const ABORT_TAIL = /\s*(Command aborted|Operation aborted|This operation was aborted|Request was aborted)\s*$/i;
+
+/** Whether a tool error is the abort itself, as opposed to a real failure that happened to coincide. */
+export function isAbortError(errorText: string): boolean {
+	return ABORT_TAIL.test(errorText);
+}
+
 /** What a tool cut off by send-now reports instead of an error: whatever it printed, then the note. */
 export const INTERRUPTED_NOTE = "[Interrupted: the user sent a new message]";
 export function interruptedOutput(errorText: string): string {
-	const kept = errorText.replace(/\s*(Command aborted|Operation aborted|This operation was aborted)\s*$/i, "").trim();
+	const kept = errorText.replace(ABORT_TAIL, "").trim();
 	return kept ? `${kept}\n\n${INTERRUPTED_NOTE}` : INTERRUPTED_NOTE;
 }
