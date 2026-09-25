@@ -138,7 +138,7 @@ export default function (pi: ExtensionAPI) {
 		sendNow = false;
 		// An undelivered steer went back to pi's own queue when the run ended: drop its record so it cannot claim a
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
-		pending = pending.filter((p) => p.how === "prompt").slice(-5);
+		pending = pending.filter((p) => p.how === "prompt");
 		if (hold || queue.length === 0 || !ctx.isIdle()) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});
@@ -194,8 +194,10 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
-		if (event.source === "interactive" && hold) {
-			hold = false; // the person is typing again: anything still held goes with what they send
+		// The person is sending again: anything still held goes with it. Not for an Alt+Enter follow-up, which pi
+		// delivers only after the run, so released images would arrive before the words that go with them.
+		if (event.source === "interactive" && hold && event.streamingBehavior !== "followUp") {
+			hold = false;
 			render(ctx);
 		}
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {

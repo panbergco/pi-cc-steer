@@ -72,7 +72,7 @@ Then `/reload`, or start a new session. It needs no settings change and works wi
 | **Ctrl+Enter** while the agent works, or **Esc** while messages wait | Whatever you've typed joins the queue, the current step is interrupted, a dim `Interrupted` line appears, and everything queued starts the next turn at once. A cut-off command shows its output and `[Interrupted: the user sent a new message]`; a cut-off reply keeps what it had written. The model is told it was interrupted. Where the terminal can't send Ctrl+Enter, use **Alt+S**. Also works during a manual `/compact`. |
 | ↑ (cursor on the first line) or Alt+↑, while messages wait | Text messages come back into the editor, ahead of whatever you'd typed. Edit them and press Enter to queue them again. Messages carrying images stay queued. |
 | Esc with nothing waiting | Interrupts the run, as usual. |
-| The run is interrupted some other way while messages wait (another extension, a command) | Seen at the end of the turn: text messages come back into the editor instead of being sent; messages carrying images are held and go with the next message you send. |
+| The run is interrupted some other way while messages wait (another extension, a command) | Seen at the end of the turn: text messages come back into the editor instead of being sent; messages carrying images are held and go with the next message you send (not with an Alt+Enter follow-up). |
 | `/command` or `!shell` while the agent works | Left to pi, exactly as without the extension. |
 
 Under the hood it uses only public pi extension APIs:
@@ -82,8 +82,8 @@ Under the hood it uses only public pi extension APIs:
 - the `context` event adds the framing to that message for the model only. A framed message is identified by its
   timestamp and text, so the same words sent at another time are not framed, and a framed message reads the same in
   every later request;
-- send-now aborts the run; `tool_result` and `message_end` relabel only an abort it caused (the run's abort signal is
-  set and the error is an abort message) as an "interrupted" hand-off, and `agent_settled` (or the end of a cancelled
+- send-now aborts the run; `tool_result` and `message_end` relabel an error as an "interrupted" hand-off only while a
+  send-now is in progress, the run's abort signal is set, and the error is an abort message, and `agent_settled` (or the end of a cancelled
   `/compact`, noticed once pi has stayed idle) sends the queue as the next prompt. The dim `Interrupted` marker is a session entry, so no model ever
   sees it, compaction summaries included;
 - a wrapped editor handles Ctrl+Enter, Esc and ↑, and still wraps any custom editor another extension installed first.
@@ -138,7 +138,7 @@ The small differences that remain:
   native steering can sometimes reach the very next request. During a manual `/compact`, Enter uses pi's own
   compaction queue.
 - **Races with other extensions.** A batch is recognised by its text when it arrives. Another extension sending the
-  same text at the same moment can take its framing, and if pi refuses a send-now prompt, its unused record can
+  same text at the same moment (or, for a batch with images, text that starts the same way) can take its framing, and if pi refuses a send-now prompt, its unused record can
   later frame an identical message you type.
 - **Older sessions.** Sessions from 0.1.0–0.1.3 keep their framing records, which match by text alone. Sessions from
   0.1.4 (GitHub only) stored the `Interrupted` marker as a message: it is kept out of requests, not out of compaction
@@ -155,7 +155,8 @@ It does **not** combine with other extensions that take over mid-turn input, suc
 the richer choice if you want a visible, reorderable queue with separate steering and follow-up lanes. pi-cc-steer is
 the smaller one (about 400 lines) if you want Claude Code's behaviour and nothing else.
 
-Only interactive input is affected. RPC mode, print mode and messages sent by other extensions are never queued.
+Only interactive input is queued. RPC mode, print mode and messages sent by other extensions are never queued, though
+the framing of an earlier batch still applies to every request that carries it.
 
 ## Development
 
