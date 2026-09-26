@@ -325,15 +325,15 @@ void describe("sendTaskNotification — exactly-once", () => {
 });
 
 void describe("submissions on their way", () => {
-    void it("overlapping submissions: one arriving does not release the other's hold", () => {
+    void it("while any submission is on its way, no notice goes in at a tool boundary", () => {
         const { reg, pi, messages } = harness();
         reg.held = [note("a")];
-        reg.submissions = 2;
-        reg.submissions--; // the first reached pi
+        reg.submissions = [{ text: "x", source: "interactive", reached: false }];
         deliverMidRun(reg, pi as never);
-        assert.equal(messages.length, 0, "the second is still on its way");
-        reg.submissions--;
+        assert.equal(messages.length, 0);
+        reg.submissions = [];
         deliverMidRun(reg, pi as never);
         assert.equal(messages.length, 1);
     });
+
 });

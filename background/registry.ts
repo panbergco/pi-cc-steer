@@ -25,6 +25,17 @@ import { readBoundedTail } from "./output.ts";
 import type { Notice } from "./notify.ts";
 
 /** One registry per session, threaded through every tool and helper. */
+/** Something of the person's on its way into pi, from the editor's submit (or pi-cc-steer's own prompt) until it is
+ *  queued (pi busy) or its run starts (pi idle). */
+export interface Submission {
+    text: string;
+    /** From the editor (the input event's source is "interactive"), or pi-cc-steer's own prompt ("extension"). */
+    source: "interactive" | "extension";
+    /** Reached pi-cc-steer's input handler while pi was idle: released when the next run starts. */
+    reached: boolean;
+    timer?: ReturnType<typeof setTimeout>;
+}
+
 export class BgRegistry {
     jobs = new Map<string, BgJob>();
     foreground = new Map<string, ForegroundSlot>();
@@ -55,9 +66,9 @@ export class BgRegistry {
     closed = false;
     /** Submissions of the person's still on their way into pi (counted from the Enter key, before any extension
      *  processes them): while any is, no notice turn starts and none goes in at a tool boundary. */
-    submissions = 0;
+    submissions: Submission[] = [];
     get submitting(): boolean {
-        return this.submissions > 0;
+        return this.submissions.length > 0;
     }
     /** The person's own messages are on their way into pi (pi-cc-steer): notices wait so they never go ahead. */
     personPending: () => boolean = () => false;

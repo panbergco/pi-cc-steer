@@ -173,26 +173,20 @@ The small differences that remain:
 - **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
 - **Notice turns and other extensions.** In the TUI a finish notice starts a turn when pi is idle. pi has no
-  "prompt being prepared" or "session ending" state an extension can see, so pi-cc-steer uses what it can: Enter in
-  the editor, and its own send-now and queued prompts, hold notice turns until that prompt starts (a command such as
-  `/model`, which may never start one, for 5 s), and the notices ride in it. What remains:
-  - a prompt that comes neither from the editor nor from pi-cc-steer, while *another* extension's input handler is
+  "prompt being prepared" or "session ending" state an extension can see, so pi-cc-steer follows each thing you submit
+  itself: from the editor's submit (after any slash completion) until pi-cc-steer's input handler sees it, then until
+  it is queued (pi busy) or its run starts (pi idle). Meanwhile no notice starts a turn or goes in ahead of it, and
+  notices ride in it. Commands (`/model`, `/new`, …), which may never become a prompt, are followed for 5 s. What
+  remains needs *another* extension, or a cancelled switch:
+  - a prompt that comes neither from the editor nor from pi-cc-steer, while another extension's input handler is
     slow, can be rejected by pi with "Agent is already processing";
-  - a message you submit that another extension swallows (it never starts a run) holds notice turns until your next
-    message;
+  - an extension loaded *after* pi-cc-steer that is slow over your message can let a notice go in ahead of it at a
+    tool boundary (pi-cc-steer has already seen the message by then);
+  - a message another extension swallows holds notices until your next message reaches pi;
   - a batch of yours that another extension rewrites on its way in keeps notices back until the run ends; they then
     ride in your next prompt;
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
-  - after a cancelled session switch, notices wait for your next message instead of starting a turn;
-  - with another extension slow over your input: two messages submitted close together can let a notice go in
-    between them; a slash command completed from a partial name (`/a` → `/ask`) is held for 5 s only; an Esc while a
-    batch of yours is still inside that extension, with a draft that starts with the same text, can let a notice
-    go ahead of it;
-  - a prompt template or skill that another extension takes longer than it takes a command to handle is fine (held
-    until it starts), but a real command (`/model`, `/new`, …) is held for 5 s only.
-- **Notices that wait for your next message.** Without any other extension involved, a finish notice can wait for
-  your next message instead of waking the model: after Esc returns a prompt template you queued during a run to the
-  editor, and after Enter fills in a file suggestion inside a prompt template (`/ask @fi…`).
+  - after a cancelled session switch, notices wait for your next message instead of starting a turn.
 - **The stuck-prompt warning is a guess.** A background command whose output stops on a line that looks like a
   prompt (for example `printf 'Press Enter submits form'; sleep 60`) is flagged although it is not waiting for input.
   Claude Code has the same limitation.

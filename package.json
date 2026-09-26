@@ -1,6 +1,6 @@
 {
   "name": "pi-cc-steer",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "Claude Code-style steering and background bash for pi: messages typed while the agent works go in together at the next tool boundary, framed for the model; Ctrl+Enter sends now; Ctrl+B moves a running command to the background.",
   "type": "module",
   "license": "MIT",

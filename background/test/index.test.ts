@@ -330,7 +330,7 @@ void describe("cancelling and failures (regressions)", () => {
     void it("Enter on a prompt holds notice turns until that prompt's run starts; its notices ride in it", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
-        h.bg.promptSubmitted();
+        h.bg.promptSubmitted("hello", "interactive");
         await h.tools.get("bash")!.execute("tc-49", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
         await sleep(300);
         const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
@@ -352,15 +352,56 @@ void describe("cancelling and failures (regressions)", () => {
         }
     });
 
-    void it("a message of the person's arriving ends its submission's hold (a template typed during a run)", async () => {
+    void it("a prompt that reached pi idle keeps notices back until its run starts (later handlers, template expansion)", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
-        h.bg.promptSubmitted();
-        await h.handlers.get("message_end")!({ message: { role: "user", content: "expanded template" } } as never, uiCtx);
-        await h.tools.get("bash")!.execute("tc-51", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        h.bg.promptSubmitted("hello", "interactive");
+        h.bg.submissionReached("hello", "interactive", true);
+        await h.tools.get("bash")!.execute("tc-55", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
         await sleep(300);
-        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1, "no longer held");
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 0, "no turn that would reject it");
+        const r = (await h.handlers.get("before_agent_start")!({} as never, uiCtx)) as unknown as { message?: { content: string } };
+        assert.match(r.message!.content, /<task-notification>/, "it rides in that prompt");
     });
+
+    void it("a submission another extension rewrote is still recognised; one it swallowed stops holding when a later one arrives", async () => {
+        const notices = (h: ReturnType<typeof startExtension>) => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        h.bg.promptSubmitted("hello", "interactive");
+        h.bg.submissionReached("hello, rewritten", "interactive", false);
+        await h.tools.get("bash")!.execute("tc-53", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        assert.equal(notices(h), 1, "rewritten: released");
+
+        const h2 = startExtension();
+        await h2.handlers.get("session_start")!({}, { isIdle: () => true });
+        h2.bg.promptSubmitted("swallowed", "interactive");
+        h2.bg.promptSubmitted("next", "interactive");
+        h2.bg.submissionReached("next", "interactive", false);
+        await h2.tools.get("bash")!.execute("tc-54", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        assert.equal(notices(h2), 1, "the swallowed one no longer holds");
+    });
+
+    void it("a submission's hold: released when it reaches pi busy, or when its run starts if pi was idle", async () => {
+        for (const idle of [false, true]) {
+            const h = startExtension();
+            await h.handlers.get("session_start")!({}, { isIdle: () => true });
+            h.bg.promptSubmitted("hello", "interactive");
+            h.bg.promptSubmitted("later", "interactive"); // still inside another extension
+            h.bg.submissionReached("hello", "interactive", idle);
+            if (idle) await h.handlers.get("agent_start")!({} as never, uiCtx);
+            await h.tools.get("bash")!.execute("tc-52", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+            await sleep(300);
+            const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+            assert.equal(notices(), 0, `${idle ? "idle" : "busy"}: "later" still holds`);
+            h.bg.submissionReached("later", "interactive", false);
+            await sleep(20);
+            assert.equal(notices(), 1, `${idle ? "idle" : "busy"}: released, the notice starts a turn`);
+        }
+    });
+
 
     void it("a job that finishes mid-run is held, then delivered once when the run ends", async () => {
         const h = startExtension();

@@ -16,12 +16,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
-import { BgRegistry, sweepStaleLogs } from "./registry.ts";
+import { BgRegistry, type Submission, sweepStaleLogs } from "./registry.ts";
 import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
-import { deliverHeld, deliverMidRun, idsOf, noticeArrived, takeWaiting } from "./notify.ts";
+import { deliverHeld, deliverMidRun, idsOf, noticeArrived, scheduleTurn, takeWaiting } from "./notify.ts";
 import { EVENT } from "./types.ts";
 import type { UiContext } from "./types.ts";
 
@@ -37,12 +37,12 @@ export interface Background {
     deliverHeld(withNextMessage: boolean): void;
     /** Tell the engine how to see that the person's own messages are still on their way into pi. */
     setPersonPending(check: () => boolean): void;
-    /** The person submitted something (pi-cc-steer's editor sees Enter before any extension processes it), or
-     *  pi-cc-steer sent a prompt of the person's: hold notice turns until a run starts. A slash command, which may
-     *  never start a run, is held for 5 s only. */
-    promptSubmitted(kind?: "command"): void;
-    /** The submission reached pi-cc-steer and was queued mid-run: it no longer needs the hold. */
-    submissionQueued(): void;
+    /** The person submitted `text` (pi-cc-steer's editor sees it before any extension processes it), or pi-cc-steer
+     *  sent a prompt of the person's: no notice turn starts, and none goes in at a tool boundary, until it is queued
+     *  or its run starts. A slash command, which may never reach pi's input handlers, is held for 5 s only. */
+    promptSubmitted(text: string, source: "interactive" | "extension", kind?: "command"): void;
+    /** A prompt reached pi-cc-steer's input handler (see Submission). */
+    submissionReached(text: string, source: string, idle: boolean): void;
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -64,17 +64,17 @@ export function registerBackground(pi: ExtensionAPI): Background {
     const cancelPendingStart = () => {
         reg.generation++;
     };
-    let submitGuard: ReturnType<typeof setTimeout> | undefined;
-    const endSubmitting = (all = true) => {
-        reg.submissions = all ? 0 : Math.max(0, reg.submissions - 1);
-        if (reg.submissions === 0 && submitGuard) {
-            clearTimeout(submitGuard);
-            submitGuard = undefined;
-        }
+    const release = (keep: (s: Submission) => boolean) => {
+        const before = reg.submissions.length;
+        reg.submissions = reg.submissions.filter((s) => keep(s) || (s.timer && clearTimeout(s.timer), false));
+        // The last hold ended with pi idle (a command, a swallowed message): notices that waited for it start a turn.
+        if (before > 0 && reg.submissions.length === 0 && reg.isIdle() && !reg.ending) scheduleTurn(reg, pi);
     };
     pi.on("agent_start", () => {
         cancelPendingStart();
-        endSubmitting(); // the submitted prompt is running; its notices rode in it (before_agent_start)
+        // The prompt that reached pi idle is running (its notices rode in it, before_agent_start). Any other that
+        // reached pi idle was refused, or swallowed by an extension after pi-cc-steer: nothing left to protect.
+        release((s) => !s.reached);
         reg.closed = false; // a run in this session: any switch that began was cancelled
     });
     pi.on("agent_end", () => {
@@ -100,8 +100,6 @@ export function registerBackground(pi: ExtensionAPI): Background {
     // from the transcript here and from the model in pi-cc-steer's context handler.
     pi.on("message_end", (event) => {
         const m = event.message as { role: string; customType?: string; details?: { noticeId?: string; noticeIds?: string[] } };
-        // A message of the person's arrived (e.g. a prompt template typed during a run, which pi queues itself).
-        if (m.role === "user") endSubmitting(false);
         if (m.role !== "custom" || m.customType !== EVENT.taskNotification) return;
         if (!noticeArrived(reg, idsOf(m.details))) return;
         return { message: { ...event.message, display: false, details: { ...m.details, duplicate: true } } as typeof event.message };
@@ -150,22 +148,28 @@ export function registerBackground(pi: ExtensionAPI): Background {
         setPersonPending: (check) => {
             reg.personPending = check;
         },
-        promptSubmitted: (kind) => {
-            reg.submissions++;
+        promptSubmitted: (text, source, kind) => {
+            const s: Submission = { text, source, reached: false };
             cancelPendingStart();
-            if (submitGuard) clearTimeout(submitGuard);
-            submitGuard = undefined;
-            // A message is held until its run starts, however long other extensions take over it: a notice turn
-            // started meanwhile would get it rejected. A command may never start a run, so it is held briefly.
+            reg.submissions.push(s);
+            // A message is held however long other extensions take over it: a notice turn started meanwhile would
+            // get it rejected. A command may never reach pi's input handlers, so it is held briefly.
             if (kind !== "command") return;
-            submitGuard = setTimeout(() => {
-                endSubmitting();
-                deliverHeld(reg, pi, false);
-            }, 5_000);
-            submitGuard.unref?.();
+            s.timer = setTimeout(() => release((x) => x !== s), 5_000);
+            s.timer.unref?.();
         },
-        submissionQueued: () => {
-            endSubmitting(false);
+        submissionReached: (text, source, idle) => {
+            const unreached = reg.submissions.filter((s) => !s.reached);
+            // By text; else (another extension rewrote it on its way) the oldest from the same origin.
+            const s =
+                unreached.find((x) => text === x.text || text.startsWith(`${x.text}\n`)) ??
+                unreached.find((x) => x.source === source);
+            if (!s) return;
+            // Older ones from the editor that have still not arrived were swallowed by another extension.
+            const dropped = s.source === "interactive" ? unreached.slice(0, unreached.indexOf(s)).filter((x) => x.source === "interactive" && !x.timer) : [];
+            if (idle) s.reached = true;
+            // pi busy: it is queued now (by pi-cc-steer, or by pi for a template): a notice sent later goes behind it.
+            release((x) => !dropped.includes(x) && (idle || x !== s));
         },
     };
 }

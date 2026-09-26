@@ -375,3 +375,40 @@ test("a notice queued behind another extension's steering message, then an abort
 	assert.equal(s.noticesIn(s.contexts.at(-1)), 1, "the copy pi kept and the re-sent one: the model sees one");
 	s.done();
 });
+
+test("runaway output: a command past the 64 MiB cap is killed; a background log is trimmed to the cap, a foreground one removed", async () => {
+	const { statSync, existsSync, readFileSync } = await import("node:fs");
+	const flood = "head -c 80000000 /dev/zero | tr '\\\\0' x; sleep 30";
+	const s = await session([
+		bash(flood, { run_in_background: true }),
+		bash(flood),
+		fauxAssistantMessage("done"),
+		fauxAssistantMessage("noted"),
+	]);
+	const started = Date.now();
+	await s.session.prompt("go");
+	await sleep(1500);
+	assert.ok(Date.now() - started < 20_000, "killed, not left to sleep 30 s");
+	const all = s.contexts.at(-1)!.map(text).join("\n");
+	assert.match(all, /Command stopped: output exceeded the size limit/, "the foreground call says why it stopped");
+	const logs = [...all.matchAll(/(\/[^\s"<>]*\.log)/g)].map((m) => m[1]);
+	const bgLog = logs.find((p) => existsSync(p));
+	assert.ok(bgLog, "the background job's log is kept");
+	assert.ok(statSync(bgLog).size <= 64 * 1024 * 1024 + 200, "trimmed to the cap");
+	assert.match(readFileSync(bgLog, "utf8").slice(-200), /exceeded the 64 MiB limit/);
+	s.done();
+});
+
+test("a command sees pi's environment: the agent's bin dir first on PATH, and this session's id", async () => {
+	const { getAgentDir } = await import("@earendil-works/pi-coding-agent");
+	const { delimiter } = await import("node:path");
+	const saved = process.env.PATH;
+	// start from a PATH without the agent's bin dir (this machine's may already have it)
+	process.env.PATH = (saved ?? "").split(delimiter).filter((d) => d !== join(getAgentDir(), "bin")).join(delimiter);
+	const s = await session([bash('echo "PATH0=${PATH%%:*}"; echo "SID=$PI_SESSION_ID"'), fauxAssistantMessage("ok")]);
+	await s.session.prompt("go").finally(() => (process.env.PATH = saved));
+	const out = s.contexts.at(-1)!.map(text).join("\n");
+	assert.match(out, new RegExp(`PATH0=${join(getAgentDir(), "bin").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`));
+	assert.match(out, new RegExp(`SID=${s.session.sessionManager.getSessionId()}`));
+	s.done();
+});

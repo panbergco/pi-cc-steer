@@ -94,7 +94,7 @@ export default function (pi: ExtensionAPI) {
 		const content = batchContent(batch) as Parameters<ExtensionAPI["sendUserMessage"]>[0];
 		// A prompt of the person's (send-now, or messages typed after the last turn): no notice turn may start before
 		// it, or pi would reject it; its notices ride in it.
-		if (how === "prompt") background?.promptSubmitted();
+		if (how === "prompt") background?.promptSubmitted(batchKey(batch.map((q) => q.text)), "extension");
 		// pi reports nothing back; if it refuses the prompt (no model, no key) it shows its own error.
 		pi.sendUserMessage(content, how === "steer" ? { deliverAs: "steer" } : undefined);
 		render(ctx);
@@ -145,12 +145,6 @@ export default function (pi: ExtensionAPI) {
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
 		// pi's Esc puts queued messages that never reached the model back in the editor: a batch whose text is now
 		// there is not on its way any more.
-		const editorText = escThisRun && ctx.mode === "tui" ? ctx.ui.getEditorText() : "";
-		escThisRun = false;
-		// pi puts every queued message back, one after another, ahead of any draft: after an Esc, the batches still
-		// pending are the ones at the start of the editor.
-		const restored = editorText !== "" && pending.some((p) => p.how === "steer" && editorText.startsWith(p.text));
-		if (restored) pending = pending.filter((p) => p.how !== "steer" || !editorText.includes(p.text));
 		// A batch flushed during the run may still be on its way in (another extension's slow input handler): when
 		// it lands it starts the next run, so notices ride after it rather than starting a turn ahead of it.
 		const batchOnItsWay = pending.some((p) => p.how === "steer");
@@ -167,18 +161,21 @@ export default function (pi: ExtensionAPI) {
 		flush(ctx, "prompt", interrupted ? "interrupt" : undefined);
 	};
 
-	/** What a submission will do, for the notice hold: a message or a prompt template/skill starts a run; a command
-	 *  might not (held briefly); `!shell` never does (not held). */
+	/** What a submission will do, for the notice hold: a message or a prompt template/skill becomes a prompt; a
+	 *  command might not reach pi's input handlers (held briefly); `!shell` never does (not held). */
 	const holdForSubmission = (text: string) => {
 		if (!background || text === "" || text.startsWith("!")) return;
-		if (!text.startsWith("/")) return background.promptSubmitted();
+		if (!text.startsWith("/")) return background.promptSubmitted(text, "interactive");
 		const name = text.slice(1).split(/\s/)[0];
 		const cmd = pi.getCommands().find((c) => c.name === name);
-		background.promptSubmitted(cmd && cmd.source !== "extension" ? undefined : "command");
+		background.promptSubmitted(text, "interactive", cmd && cmd.source !== "extension" ? undefined : "command");
 	};
 
-	/** Esc pressed during this run (pi then returns queued messages to the editor). */
-	let escThisRun = false;
+	/** pi put its queued messages back in the editor (Esc, or its dequeue key): batches of ours among them are not on
+	 *  their way any more. */
+	const queueRestored = (restored: string) => {
+		pending = pending.filter((p) => p.how !== "steer" || !restored.includes(p.text));
+	};
 
 	const installEditor = (ctx: ExtensionContext) => {
 		if (ctx.mode !== "tui") return;
@@ -193,14 +190,6 @@ export default function (pi: ExtensionAPI) {
 				// cursor-left. Queued messages then go in at the tool boundary that this creates.
 				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
 				const completing = Boolean(e.isShowingAutocomplete?.());
-				// Esc interrupts only when no suggestion list is open (otherwise it just closes the list).
-				if (!completing && keybindings.matches(data, "app.interrupt") && !ctx.isIdle()) escThisRun = true;
-				// Enter on something: it is about to become a prompt, a queued message (which becomes a prompt if the run
-				// ends first) or a command such as /new. Tell the engine now, before any extension processes it, so no
-				// notice turn starts — or goes in — ahead of it. On a file suggestion Enter only fills it in; on a
-				// slash-command suggestion pi's editor submits it.
-				const text = ctx.ui.getEditorText().trim();
-				if (keybindings.matches(data, "tui.input.submit") && (!completing || text.startsWith("/"))) holdForSubmission(text);
 				if (completing) return handleInput(data);
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
@@ -211,8 +200,31 @@ export default function (pi: ExtensionAPI) {
 					const dequeue = keybindings.matches(data, "app.message.dequeue");
 					if ((up || dequeue) && popIntoEditor(ctx)) return;
 				}
+				// pi's Esc (while it works) and its dequeue key put pi's queued messages back in the editor, ahead of
+				// any draft. Seeing it happen is the only reliable way to know which of our batches went back.
+				const restoring =
+					(keybindings.matches(data, "app.interrupt") && !ctx.isIdle()) || keybindings.matches(data, "app.message.dequeue");
+				const before = restoring ? editor.getText() : "";
 				handleInput(data);
+				const after = restoring ? editor.getText() : "";
+				if (after !== before) queueRestored(before.trim() ? after.slice(0, Math.max(0, after.length - before.length)) : after);
 			};
+			// Every submission from the editor, with its final text (after a slash completion; a file completion is
+			// not a submission), before pi or any extension processes it. pi sets onSubmit after this factory returns,
+			// so wrap whatever it sets. The notice engine holds notices for it (see background promptSubmitted).
+			let submit = editor.onSubmit;
+			Object.defineProperty(editor, "onSubmit", {
+				configurable: true,
+				get: () =>
+					submit &&
+					((text: string) => {
+						holdForSubmission(text.trim());
+						return submit?.(text);
+					}),
+				set: (fn: typeof submit) => {
+					submit = fn;
+				},
+			});
 			return editor;
 		};
 		(factory as { [INSTALLED]?: boolean })[INSTALLED] = true;
@@ -241,6 +253,9 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("input", (event, ctx) => {
+		// A submission of the person's got this far: queued now if pi is busy (by us below, or by pi for a template),
+		// or about to start a run if pi is idle.
+		background?.submissionReached(event.text, event.source, ctx.isIdle());
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {
 			return { action: "continue" };
 		}
@@ -248,7 +263,6 @@ export default function (pi: ExtensionAPI) {
 		// it. Let pi take it — as a new prompt, or as its own queued message if a run has started meanwhile.
 		if (ctx.isIdle()) return { action: "continue" };
 		queue.push({ text: event.text, images: event.images ?? [] });
-		background?.submissionQueued();
 		render(ctx);
 		return { action: "handled" };
 	});

@@ -134,15 +134,42 @@ test("after a send-now, the notice rides after the person's message in the same 
 
 
 /** Install pi-cc-steer's editor over a fake one; returns something to type into. */
-async function editorOf(h: Awaited<ReturnType<typeof setup>>, autocomplete = () => false) {
+async function editorOf(
+	h: Awaited<ReturnType<typeof setup>>,
+	opts: { autocomplete?: () => boolean; piQueue?: () => string; completion?: { prefix: string; result: string } } = {},
+) {
+	const completing = opts.autocomplete ?? (() => false);
 	h.ctx.mode = "tui";
 	let factory: any;
 	h.ctx.ui.setEditorComponent = (f: unknown) => (factory = f);
-	h.ctx.ui.getEditorComponent = () => () => ({ handleInput() {}, isShowingAutocomplete: autocomplete });
+	// Behaves like pi's editor: Enter submits through onSubmit (on a suggestion: a slash command is completed and
+	// submitted, a file is only filled in); Esc while pi works puts pi's queued messages back, ahead of the draft.
+	h.ctx.ui.getEditorComponent = () => () => ({
+		onSubmit: undefined as undefined | ((t: string) => void),
+		getText: () => h.state.editor,
+		isShowingAutocomplete: completing,
+		handleInput(data: string) {
+			if (data === "\r" && completing() && opts.completion) {
+				h.state.editor = opts.completion.result; // the suggestion is applied
+				if (!opts.completion.prefix.startsWith("/")) return; // a file suggestion: filled in, not submitted
+			}
+			if (data === "\r") {
+				const text = h.state.editor;
+				h.state.editor = "";
+				this.onSubmit?.(text);
+			}
+			if (data === "\x1b" && !completing() && !h.state.idle) {
+				const queued = opts.piQueue?.() ?? "";
+				if (queued) h.state.editor = [queued, h.state.editor].filter((t) => t.trim()).join("\n\n");
+			}
+		},
+	});
 	await h.handlers.session_start({}, h.ctx);
 	await sleep(10);
 	const keys: Record<string, string> = { "tui.input.submit": "\r", "app.interrupt": "\x1b" };
-	return factory({}, {}, { matches: (data: string, id: string) => keys[id] === data });
+	const editor = factory({}, {}, { matches: (data: string, id: string) => keys[id] === data });
+	editor.onSubmit = () => {}; // what pi does after creating the editor
+	return editor;
 }
 
 test("Enter in the editor while pi is idle holds a finish notice for that prompt instead of starting a turn", async () => {
@@ -181,41 +208,44 @@ test("a job finishing while the person's batch is still on its way does not star
 	assert.equal(h.notices.length, 0, "waits for the person's batch");
 });
 
-test("a batch that Esc put back in the editor stops holding notices back — only after an Esc", async () => {
-	for (const pressedEsc of [true, false]) {
+test("a batch that pi's Esc put back in the editor stops holding notices back; a draft that only resembles it does not", async () => {
+	for (const piHadIt of [true, false]) {
 		const h = await setup();
-		const editor = await editorOf(h);
+		const editor = await editorOf(h, { piQueue: () => (piHadIt ? "PERSON" : "") });
 		await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
-		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed to pi
-		if (pressedEsc) editor.handleInput("\x1b");
-		h.state.editor = pressedEsc ? "PERSON" : "PERSON and more"; // Esc returned it; otherwise a draft mentioning it
+		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed
+		// either pi has it queued, or it is still inside another extension's slow input handler
+		h.state.editor = piHadIt ? "" : "PERSON and more"; // a draft that starts with the same text
+		editor.handleInput("\x1b");
 		h.ctx.signal.aborted = true;
 		await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
 		h.state.idle = true;
 		await h.handlers.agent_settled({}, h.ctx);
 		await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
 		await sleep(300);
-		assert.equal(h.notices.length, pressedEsc ? 1 : 0, pressedEsc ? "the notice wakes the model" : "the batch may still be on its way");
+		assert.equal(h.notices.length, piHadIt ? 1 : 0, piHadIt ? "the notice wakes the model" : "the batch is still on its way");
 	}
 });
 
-test("Enter on !shell or on an autocomplete suggestion does not hold notices; Enter on a template holds them past 5 s, a command does not", async () => {
-	const cases: Array<[string, boolean, number, boolean]> = [
-		// text, autocomplete open, wait ms, held afterwards
-		["!ls", false, 300, false],
-		["see @fi", true, 300, false],
-		["/ask about it", false, 5300, true],
-		["/model", false, 5300, false],
+test("what a submission holds: !shell nothing; a file suggestion is not a submission; a template (even completed from /a) until it starts; a command 5 s", async () => {
+	type Case = { text: string; completion?: { prefix: string; result: string }; wait: number; held: boolean };
+	const cases: Case[] = [
+		{ text: "!ls", wait: 300, held: false },
+		{ text: "see @fi", completion: { prefix: "@fi", result: "see @file.txt" }, wait: 300, held: false },
+		{ text: "/ask @fi", completion: { prefix: "@fi", result: "/ask @file.txt" }, wait: 300, held: false },
+		{ text: "/ask about it", wait: 5300, held: true },
+		{ text: "/a", completion: { prefix: "/a", result: "/ask" }, wait: 5300, held: true },
+		{ text: "/model", wait: 5300, held: false },
 	];
-	for (const [text, autocomplete, wait, held] of cases) {
+	for (const c of cases) {
 		const h = await setup();
-		const editor = await editorOf(h, () => autocomplete);
+		const editor = await editorOf(h, { autocomplete: () => Boolean(c.completion), completion: c.completion });
 		h.state.idle = true;
-		h.state.editor = text;
+		h.state.editor = c.text;
 		editor.handleInput("\r");
 		await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
-		await sleep(wait);
-		assert.equal(h.notices.length, held ? 0 : 1, `${text}: ${held ? "held" : "a turn starts"}`);
+		await sleep(c.wait);
+		assert.equal(h.notices.length, c.held ? 0 : 1, `${c.text}: ${c.held ? "held" : "a turn starts"}`);
 	}
 });
 
@@ -236,39 +266,67 @@ test("Enter while pi is busy: no notice goes in ahead of that message at a tool 
 	assert.deepEqual(h.order.slice(-2), ["message", "notice"], "the person's message, then the notice");
 });
 
-test("Enter on a slash-command suggestion submits it, so it holds notices; Esc that only closes suggestions is no interruption", async () => {
+test("Esc that only closes a suggestion list is no interruption", async () => {
 	const h = await setup();
-	const editor = await editorOf(h, () => true); // a suggestion list is open
+	const editor = await editorOf(h, { autocomplete: () => true, piQueue: () => "PERSON" });
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed, on its way
+	editor.handleInput("\x1b"); // closes the suggestion list only
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
 	h.state.idle = true;
-	h.state.editor = "/ask";
-	editor.handleInput("\r");
+	await h.handlers.agent_settled({}, h.ctx);
 	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
 	await sleep(300);
-	assert.equal(h.notices.length, 0, "held for the submitted template");
+	assert.equal(h.notices.length, 0, "the batch is still taken to be on its way");
+});
 
-	const h2 = await setup();
-	const e2 = await editorOf(h2, () => true);
-	await h2.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h2.ctx);
-	await h2.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h2.ctx); // flushed, on its way
-	h2.state.editor = "PERSON again";
-	e2.handleInput("\x1b"); // closes the suggestion list only
-	await h2.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h2.ctx);
-	h2.state.idle = true;
-	await h2.handlers.agent_settled({}, h2.ctx);
-	await h2.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h2.ctx);
+test("two messages submitted close together: the first reaching pi does not release the second", async () => {
+	const h = await setup();
+	const editor = await editorOf(h);
+	await h.handlers.agent_start({}, h.ctx);
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
 	await sleep(300);
-	assert.equal(h2.notices.length, 0, "the batch is still taken to be on its way");
+	for (const t of ["FIRST", "SECOND"]) {
+		h.state.editor = t;
+		editor.handleInput("\r");
+	}
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "FIRST" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // FIRST flushed
+	await h.handlers.message_end({ message: { role: "user", content: [{ type: "text", text: "FIRST" }], timestamp: 1 } }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	assert.equal(h.notices.length, 0, "SECOND is still inside another extension");
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "SECOND" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // SECOND flushed
+	await h.handlers.message_end({ message: { role: "user", content: [{ type: "text", text: "SECOND" }], timestamp: 2 } }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	assert.equal(h.notices.length, 1, "then the notice");
+});
+
+test("a template typed during a run, then Esc: nothing is left holding notices", async () => {
+	const h = await setup();
+	const editor = await editorOf(h, { piQueue: () => "EXPANDED details" });
+	await h.handlers.agent_start({}, h.ctx);
+	h.state.editor = "/ask details";
+	editor.handleInput("\r");
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "/ask details" }, h.ctx); // pi queues it
+	editor.handleInput("\x1b"); // pi puts the expanded text back in the editor
+	h.ctx.signal.aborted = true;
+	await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 1, "the notice wakes the model");
 });
 
 test("one Esc that returns two batches to the editor releases both", async () => {
 	const h = await setup();
-	const editor = await editorOf(h);
+	const editor = await editorOf(h, { piQueue: () => "PERSON1\n\nPERSON2" });
 	for (const t of ["PERSON1", "PERSON2"]) {
 		await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: t }, h.ctx);
 		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
 	}
 	editor.handleInput("\x1b");
-	h.state.editor = "PERSON1\n\nPERSON2";
 	h.ctx.signal.aborted = true;
 	await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
 	h.state.idle = true;

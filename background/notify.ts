@@ -258,7 +258,13 @@ export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage
     reg.ending = false;
     reg.waiting.push(...reg.held.splice(0), ...reg.inFlight.values());
     reg.inFlight.clear();
-    if (reg.waiting.length === 0 || withNextMessage || !reg.startsTurns) return;
+    if (withNextMessage) return;
+    scheduleTurn(reg, pi);
+}
+
+/** pi is (about to be) idle with notices waiting: start one turn for them once this event has finished. */
+export function scheduleTurn(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
+    if (reg.waiting.length === 0 || !reg.startsTurns) return;
     const generation = reg.generation;
     setTimeout(() => {
         try {
