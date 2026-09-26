@@ -54,7 +54,9 @@ export default function (pi: ExtensionAPI) {
 	// Claude Code's background bash (Ctrl+B). It replaces pi's bash tool, so it can be switched off.
 	const background = process.env.PI_CC_STEER_BACKGROUND === "0" ? undefined : registerBackground(pi);
 	// Notices wait while a batch of the person's messages is on its way into pi (handed over, not yet arrived).
-	background?.setPersonPending(() => pending.some((p) => p.how === "steer"));
+	background?.setPersonPending((except) =>
+		pending.some((p) => p.how === "steer" && except !== p.text && !except?.startsWith(`${p.text}\n`)),
+	);
 	let queue: Queued[] = [];
 	/** Batches handed to pi and not yet seen arriving as a user message. */
 	let pending: Pending[] = [];
@@ -145,12 +147,11 @@ export default function (pi: ExtensionAPI) {
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
 		// pi's Esc puts queued messages that never reached the model back in the editor: a batch whose text is now
 		// there is not on its way any more.
-		// A batch flushed during the run may still be on its way in (another extension's slow input handler): when
-		// it lands it starts the next run, so notices ride after it rather than starting a turn ahead of it.
-		const batchOnItsWay = pending.some((p) => p.how === "steer");
 		// A steer batch not yet arrived may still be on its way (another extension's slow input handler) and land as
 		// the next prompt: keep its record through this settle, and drop it at the next one (pi discarded it).
 		pending = pending.filter((p) => p.how === "prompt" || p.settles++ === 0);
+		// Such a batch starts the next run when it lands, so notices ride after it rather than start a turn ahead.
+		const batchOnItsWay = pending.some((p) => p.how === "steer");
 		const sending = queue.length > 0 && ctx.isIdle();
 		// Background finish notices not yet delivered: they ride in the next prompt when one is coming (after it,
 		// as in Claude Code); otherwise they start a turn once pi has fully stopped.
@@ -214,7 +215,10 @@ export default function (pi: ExtensionAPI) {
 				const before = restoring ? editor.getText() : "";
 				handleInput(data);
 				const after = restoring ? editor.getText() : "";
-				if (after !== before) queueRestored(before.trim() ? after.slice(0, Math.max(0, after.length - before.length)) : after);
+				// pi writes the queued text, a blank line, then the draft (or the queued text alone if there is none).
+				if (after !== before) {
+					queueRestored(before.trim() && after.endsWith(`\n\n${before}`) ? after.slice(0, -(before.length + 2)) : after);
+				}
 			};
 			// Every submission from the editor, with its final text (after a slash completion; a file completion is
 			// not a submission), before pi or any extension processes it. pi sets onSubmit after this factory returns,

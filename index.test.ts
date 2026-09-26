@@ -397,3 +397,32 @@ test("input pi held back (e.g. typed while it compacts) and then put back with A
 	await sleep(50);
 	assert.equal(h.notices.length, 1, "released: the notice starts its turn");
 });
+
+test("a prompt carries notices only if no batch of the person's is still on its way — unless it is that batch", async () => {
+	for (const [prompt, carries] of [["SECOND", false], ["FIRST", true]] as const) {
+		const h = await setup();
+		await finishJobMidRun(h); // a notice is held
+		await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "FIRST" }, h.ctx);
+		await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx); // flushed as the run ends
+		h.state.idle = true;
+		await h.handlers.agent_settled({}, h.ctx);
+		await h.handlers.input({ source: "interactive", text: prompt }, h.ctx);
+		const r = await h.handlers.before_agent_start({ prompt }, h.ctx);
+		assert.equal(Boolean(r?.message), carries, `${prompt}: ${carries ? "it is the batch: carries the notice" : "FIRST still on its way"}`);
+	}
+});
+
+test("Alt+↑ with a draft in the editor: the batch pi put back is still recognised", async () => {
+	const h = await setup();
+	const editor = await editorOf(h, { piQueue: () => "PERSON" });
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed
+	h.state.editor = "DRAFT";
+	editor.handleInput("\x1b[1;3A"); // pi writes "PERSON", a blank line, "DRAFT"
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 1, "released: the notice wakes the model");
+});

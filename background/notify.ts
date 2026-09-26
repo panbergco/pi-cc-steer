@@ -130,6 +130,7 @@ function makeNotice(reg: BgRegistry, content: string, details: Notice["details"]
 export function deliverNotice(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notice: Notice): void {
     if (reg.ending || !reg.isIdle()) {
         reg.held.push(notice);
+        watchHeld(reg, pi);
         return;
     }
     if (!reg.startsTurns || reg.submitting || reg.personPending()) {
@@ -262,6 +263,26 @@ export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage
     scheduleTurn(reg, pi);
 }
 
+/**
+ * Notices held while pi is busy outside a run (compacting, summarising a branch for /tree, …): no run ends to hand
+ * them on, so check until pi is idle, then start their turn. A run that starts meanwhile takes over.
+ */
+export function watchHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
+    if (reg.heldWatch || reg.inRun || reg.ending) return;
+    const stop = () => {
+        if (reg.heldWatch) clearInterval(reg.heldWatch);
+        reg.heldWatch = undefined;
+    };
+    reg.heldWatch = setInterval(() => {
+        if (reg.closed || reg.inRun || reg.ending || reg.held.length === 0) return stop();
+        if (!reg.isIdle()) return;
+        stop();
+        reg.waiting.push(...reg.held.splice(0));
+        scheduleTurn(reg, pi);
+    }, 250);
+    reg.heldWatch.unref?.();
+}
+
 /** pi is (about to be) idle with notices waiting: start one turn for them once this event has finished. */
 export function scheduleTurn(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
     if (reg.waiting.length === 0 || !reg.startsTurns) return;
@@ -309,12 +330,12 @@ function combine(notices: Notice[]): Notice {
  * A prompt is about to start (any source: typed, RPC, a template, another extension): the waiting notices ride
  * in it, after the prompt, as one message.
  */
-export function takeWaiting(reg: BgRegistry):
+export function takeWaiting(reg: BgRegistry, prompt?: string):
     | { customType: string; content: string; display: boolean; details: unknown }
     | undefined {
     // Something else of the person's still on its way (submitted earlier, held by another extension): notices
     // wait for it rather than ride ahead of it in this prompt. (The prompt starting now has been seen.)
-    if (reg.submissions.some((s) => !s.reached)) return undefined;
+    if (reg.submissions.some((s) => !s.reached) || reg.personPending(prompt)) return undefined;
     const waiting = reg.waiting.splice(0).filter((n) => !reg.arrived.has(n.id));
     if (waiting.length === 0) return undefined;
     for (const n of waiting) reg.inFlight.set(n.id, n); // arrival is recorded when pi reports it (message_end)

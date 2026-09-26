@@ -294,7 +294,7 @@ test("a slow extension holding the person's message on its way in: notices still
 	s.done();
 });
 
-test("a batch another extension rewrote on its way in: the notice never goes ahead of it, and rides in the next prompt", async () => {
+test("a batch another extension rewrote on its way in: the notice never goes ahead of it", async () => {
 	const rewrite = (pi: any) =>
 		pi.on("input", (e: { source: string; text: string }) =>
 			e.source === "extension" ? { action: "transform", text: `${e.text} (rewritten)` } : undefined,
@@ -307,6 +307,7 @@ test("a batch another extension rewrote on its way in: the notice never goes ahe
 			bash("sleep 0.2; echo three"),
 			fauxAssistantMessage("done"),
 			fauxAssistantMessage("next answered"),
+			fauxAssistantMessage("notice answered"),
 		],
 		"tui",
 		[rewrite],
@@ -319,8 +320,9 @@ test("a batch another extension rewrote on its way in: the notice never goes ahe
 	assert.equal(s.contexts.length, 5, "no notice-only turn after the run");
 	assert.equal(s.noticesIn(s.contexts.at(-1)), 0, "held back rather than risk going ahead of the rewritten batch");
 	await s.session.prompt("next");
+	await sleep(300); // the unrecognised batch no longer counts after that run: the notice gets its turn
 	const last = s.contexts.at(-1)!;
-	assert.equal(s.noticesIn(last), 1, "rides in the next prompt");
+	assert.equal(s.noticesIn(last), 1, "delivered once it cannot be ahead of the batch");
 	assert.ok(last.findIndex((m) => text(m).includes("PERSON")) < last.findIndex((m) => text(m).includes("<task-notification>")));
 	s.done();
 });

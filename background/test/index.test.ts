@@ -417,7 +417,7 @@ void describe("cancelling and failures (regressions)", () => {
         assert.equal(r?.message, undefined, "the notice waits for FIRST");
     });
 
-    void it("a job that finishes while pi compacts outside a run is delivered once the compaction is over", async () => {
+    void it("a job that finishes while pi is busy outside a run (compacting, /tree) is delivered once pi is idle", async () => {
         const h = startExtension();
         let compacting = true;
         await h.handlers.get("session_start")!({}, { isIdle: () => !compacting });
@@ -425,8 +425,7 @@ void describe("cancelling and failures (regressions)", () => {
         await sleep(300); // finished: held, pi is busy compacting
         const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
         assert.equal(notices(), 0);
-        await h.handlers.get("session_compact")!({} as never, uiCtx); // pi reports it while still marked compacting
-        setTimeout(() => (compacting = false), 150);
+        setTimeout(() => (compacting = false), 150); // compaction (or a /tree summary) ends; no run ends with it
         await sleep(500);
         assert.equal(notices(), 1, "the notice starts its turn");
     });

@@ -35,8 +35,9 @@ export interface Background {
     deliverMidRun(queuedInPi: number): void;
     /** The run ended (see notify.ts deliverHeld). */
     deliverHeld(withNextMessage: boolean): void;
-    /** Tell the engine how to see that the person's own messages are still on their way into pi. */
-    setPersonPending(check: () => boolean): void;
+    /** Tell the engine how to see that the person's own messages are still on their way into pi (other than
+     *  `except`, the prompt now starting). */
+    setPersonPending(check: (except?: string) => boolean): void;
     /** The person submitted `text` (pi-cc-steer's editor sees it before any extension processes it), or pi-cc-steer
      *  sent a prompt of the person's: no notice turn starts, and none goes in at a tool boundary, until it is queued
      *  or its run starts. A slash command, which may never reach pi's input handlers, is held for 5 s only. */
@@ -90,30 +91,11 @@ export function registerBackground(pi: ExtensionAPI): Background {
         release((s) => !s.reached);
         reg.closed = false; // a run in this session: any switch that began was cancelled
     });
-    // A notice that arrives while pi compacts outside a run is held (pi is busy), and no run ends to hand it on:
-    // once the compaction is over and pi is idle, it starts its turn.
-    let inRun = false;
     pi.on("agent_start", () => {
-        inRun = true;
+        reg.inRun = true;
     });
-    const afterCompaction = () => {
-        if (inRun || reg.ending) return; // a run hands its notices on when it ends
-        let tries = 0;
-        const check = () => {
-            if (reg.closed || inRun || reg.ending) return;
-            if (!reg.isIdle()) {
-                if (++tries < 100) setTimeout(check, 100).unref?.();
-                return;
-            }
-            reg.waiting.push(...reg.held.splice(0));
-            scheduleTurn(reg, pi);
-        };
-        setTimeout(check, 0).unref?.();
-    };
-    pi.on("session_compact", afterCompaction);
-    pi.on("session_compact_failed", afterCompaction);
     pi.on("agent_end", () => {
-        inRun = false;
+        reg.inRun = false;
         reg.ending = true; // until pi-cc-steer's settle hands the run's notices on (deliverHeld)
     });
     // Once a session switch or shutdown begins, this session never starts a notice turn again (the switch may
@@ -143,8 +125,8 @@ export function registerBackground(pi: ExtensionAPI): Background {
         return { message: { ...event.message, display: false, details: { ...m.details, duplicate: true } } as typeof event.message };
     });
     // Any prompt that actually starts a run carries the waiting notices, after the prompt.
-    pi.on("before_agent_start", () => {
-        const message = takeWaiting(reg);
+    pi.on("before_agent_start", (event) => {
+        const message = takeWaiting(reg, (event as { prompt?: string } | undefined)?.prompt);
         return message ? { message } : undefined;
     });
     // Typing while a command runs does not background it; the message waits (Claude Code's default for bash).

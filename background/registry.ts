@@ -71,7 +71,11 @@ export class BgRegistry {
         return this.submissions.length > 0;
     }
     /** The person's own messages are on their way into pi (pi-cc-steer): notices wait so they never go ahead. */
-    personPending: () => boolean = () => false;
+    personPending: (except?: string) => boolean = () => false;
+    /** A run is going on (agent_start … agent_end). */
+    inRun = false;
+    /** Watching for pi to go idle with notices held outside a run (see notify.ts watchHeld). */
+    heldWatch?: ReturnType<typeof setInterval>;
     /** Notices that arrived while pi was busy, not yet handed to pi. */
     held: Notice[] = [];
     /** Notices handed to pi, until pi shows they arrived. */

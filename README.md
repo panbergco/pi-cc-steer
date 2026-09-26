@@ -196,8 +196,8 @@ The small differences that remain:
     tool boundary (pi-cc-steer has already seen the message by then);
   - a message another extension swallows holds notices for 60 s; one it takes longer than 60 s over can be rejected
     by pi with "Agent is already processing" if a notice starts a turn meanwhile;
-  - a batch of yours that another extension rewrites on its way in keeps notices back until the run ends; they then
-    ride in your next prompt;
+  - a batch of yours that another extension rewrites on its way in cannot be recognised when it arrives, so it keeps
+    notices back until the run after it ends;
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
   - after a cancelled session switch, notices wait for your next message instead of starting a turn;
   - when Esc or Alt+↑ puts pi's queue back in the editor and it mixes your messages with others (a follow-up, a
