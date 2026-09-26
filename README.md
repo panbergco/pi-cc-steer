@@ -107,7 +107,7 @@ Modelled on Claude Code's background bash:
 | A command is still running after 2 s | A hint appears under the editor: `(ctrl+b to run in background)` (`ctrl+b ctrl+b` inside tmux, where Ctrl+B is the prefix). |
 | **Ctrl+B** (or Ctrl+Shift+B, or `/bg`) while it runs | The command keeps running with its output going to a log file. The model is told it was backgrounded and carries on; messages you queued go in at that point. With nothing running, Ctrl+B is still cursor-left. |
 | The command reaches its timeout (120 s by default) | It moves to the background instead of being killed. |
-| A background command finishes | The model gets one notice with its status, exit code, output tail and log path. If pi is idle it starts a turn. If pi is busy the notice waits for the run to end, then goes in right after your next message, or starts a turn itself when nothing else follows. After an interruption, a failed retry, a cancelled compaction or a reply cut off by length it waits instead, and you are told: it goes in with the next prompt, whoever sends it, so the agent does not start again on its own. |
+| A background command finishes | The model gets one notice with its status, exit code, output tail and log path. If pi is idle it starts a turn. If pi is busy the notice waits for the run to end, then goes in right after your next message, or starts a turn itself when nothing else follows. After an interruption, a failed retry or other error, a cancelled compaction, or a reply cut off by length it waits instead, and you are told: it goes in with the next prompt (typed, from RPC, a template or another extension's prompt), so the agent does not start again on its own. |
 | Esc, or a send-now, while a command runs in the foreground | The command and everything it started are stopped at once, as pi's own bash does. |
 | You type a message while a command runs | It waits for the command, as in Claude Code; press Ctrl+B to move on sooner. |
 
@@ -168,8 +168,9 @@ The small differences that remain:
 - **A cut-off tool keeps only what its final error carries.** pi's bash tool keeps its final output (truncated if
   long) and a reference to the full-output file; a custom tool that streamed output and then reports only
   "Operation aborted" shows just the note.
-- **Notices after an Esc outside a turn.** If you press Esc while another extension's slow end-of-run handler is
-  still running, a waiting finish notice can start one extra turn.
+- **Finish notices around interruptions.** If you press Esc while another extension's slow end-of-run handler is
+  still running, a held finish notice can start one extra turn. A notice waiting after an interruption is not
+  carried by a turn another extension starts with its own custom message; it goes in with the next prompt.
 - **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
 - **Nothing is persisted.** Queued messages, and finish notices waiting for your next message, live in memory, as pi's own queue does: `/reload`, exit or

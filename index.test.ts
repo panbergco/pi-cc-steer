@@ -145,3 +145,20 @@ test("a compaction cancelled during the run makes the notice wait instead of res
 	await h.handlers.agent_settled({}, h.ctx);
 	assert.equal(h.notices.length, 0, "no new run");
 });
+
+test("after a cancelled compaction, the next clean run's notice starts a turn again", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+	await h.handlers.session_compact_failed({ aborted: true, reason: "threshold" }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	assert.equal(h.notices.length, 0);
+	h.state.idle = false;
+	await finishJobMidRun(h); // a new run: the cancelled compaction belongs to the last one
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	assert.deepEqual(h.notices.map((n) => n.opts).at(-1), { triggerTurn: true }, "starts a turn, carrying both");
+	assert.equal(h.notices.length, 2, "the one that waited goes first, then the new one");
+});

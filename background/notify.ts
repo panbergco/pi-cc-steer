@@ -174,7 +174,7 @@ export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage
     }
     if (!reg.endedCleanly || reg.compactionCancelled) {
         reg.waiting.push(...held);
-        return held.length;
+        return reg.waiting.length;
     }
     startTurnWith(reg, pi, held);
     return 0;
