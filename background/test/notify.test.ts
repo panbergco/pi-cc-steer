@@ -244,6 +244,15 @@ void describe("notices that finish mid-run", () => {
         assert.equal(messages.length, 2);
     });
 
+    void it("a notice attached to a prompt but never seen arriving is sent again when the run ends", async () => {
+        const { reg, pi, messages } = harness();
+        reg.waiting = [note("a")];
+        takeWaiting(reg); // the prompt carrying it was then rejected
+        deliverHeld(reg, pi as never, false);
+        await tick();
+        assert.equal(messages.length, 1);
+    });
+
     void it("a waiting notice goes ahead of a new one that starts a turn while idle", () => {
         const { reg, pi, messages, deliverOptions } = harness();
         reg.waiting = [note("A")];

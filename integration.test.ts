@@ -28,7 +28,11 @@ const bash = (command: string, extra: Record<string, unknown> = {}) =>
 	fauxAssistantMessage([fauxToolCall("bash", { command, ...extra })], { stopReason: "toolUse" });
 
 /** A pi session with pi-cc-steer, answering with `steps` in order; records every context the model is sent. */
-async function session(steps: Array<ReturnType<typeof bash>>, mode: "tui" | "rpc" = "tui") {
+async function session(
+	steps: Array<ReturnType<typeof bash>>,
+	mode: "tui" | "rpc" = "tui",
+	before: Array<(pi: any) => void> = [],
+) {
 	const dir = mkdtempSync(join(tmpdir(), "ccs-it-"));
 	const faux = registerFauxProvider();
 	const model = faux.getModel();
@@ -49,7 +53,7 @@ async function session(steps: Array<ReturnType<typeof bash>>, mode: "tui" | "rpc
 			baseUrl: m.baseUrl,
 		})),
 	} as never);
-	const resourceLoader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, extensionFactories: [steer] } as never);
+	const resourceLoader = new DefaultResourceLoader({ cwd: dir, agentDir: dir, extensionFactories: [...before, steer] } as never);
 	await resourceLoader.reload();
 	const { session } = await createAgentSession({
 		cwd: dir,
@@ -254,4 +258,67 @@ test("a background command stuck at a prompt: the model is told (watcher running
 	} finally {
 		Object.assign(STALL_TIMING, saved);
 	}
+});
+
+/** Another extension, loaded first, whose input handler takes a while over messages pi-cc-steer sends on. */
+const slowInput = (ms: number) => (pi: any) =>
+	pi.on("input", async (e: { source: string }) => {
+		if (e.source === "extension") await sleep(ms);
+		return undefined;
+	});
+
+test("a slow extension holding the person's message on its way in: notices still wait for it, mid-run and at the end", async () => {
+	const s = await session(
+		[
+			bash("true", { run_in_background: true }),
+			bash("sleep 1; echo one"),
+			bash("sleep 0.2; echo two"),
+			bash("echo three"),
+			fauxAssistantMessage("done"),
+			fauxAssistantMessage("after"),
+		],
+		"tui",
+		[slowInput(700)],
+	);
+	const run = s.session.prompt("go");
+	await sleep(600);
+	await s.session.prompt("PERSON", { streamingBehavior: "steer" });
+	await run.catch(() => {});
+	await sleep(1500);
+	const all = s.contexts.at(-1)!;
+	const person = all.findIndex((m) => text(m).includes("PERSON"));
+	const notice = all.findIndex((m) => text(m).includes("<task-notification>"));
+	assert.ok(person >= 0 && notice >= 0, "both reached the model");
+	assert.ok(person < notice, "the person's message ahead of the notice");
+	assert.equal(s.noticesIn(all), 1);
+	s.done();
+});
+
+test("a batch another extension rewrote on its way in stops holding notices once it arrives", async () => {
+	const rewrite = (pi: any) =>
+		pi.on("input", (e: { source: string; text: string }) =>
+			e.source === "extension" ? { action: "transform", text: `${e.text} (rewritten)` } : undefined,
+		);
+	const s = await session(
+		[
+			bash("true", { run_in_background: true }),
+			bash("sleep 1; echo one"),
+			bash("sleep 0.2; echo two"),
+			bash("sleep 0.2; echo three"),
+			fauxAssistantMessage("done"),
+		],
+		"tui",
+		[rewrite],
+	);
+	const run = s.session.prompt("go");
+	await sleep(600);
+	await s.session.prompt("PERSON", { streamingBehavior: "steer" });
+	await run;
+	// flushed after "one", arrives rewritten with "two"'s request; the notice then goes at the next boundary,
+	// inside this run — not held back to a separate turn after it
+	assert.equal(s.contexts.length, 5, "no extra notice-only turn");
+	const last = s.contexts.at(-1)!;
+	assert.equal(s.noticesIn(last), 1);
+	assert.ok(last.findIndex((m) => text(m).includes("PERSON")) < last.findIndex((m) => text(m).includes("<task-notification>")));
+	s.done();
 });

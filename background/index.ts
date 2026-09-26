@@ -37,6 +37,9 @@ export interface Background {
     deliverHeld(withNextMessage: boolean): void;
     /** Tell the engine how to see that the person's own messages are still on their way into pi. */
     setPersonPending(check: () => boolean): void;
+    /** The person pressed Enter on something in the TUI while pi was idle (pi-cc-steer's editor sees it before
+     *  any extension processes it): hold notice turns until that prompt's run starts. */
+    promptSubmitted(): void;
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -58,7 +61,17 @@ export function registerBackground(pi: ExtensionAPI): Background {
     const cancelPendingStart = () => {
         reg.generation++;
     };
-    pi.on("agent_start", cancelPendingStart);
+    let submitGuard: ReturnType<typeof setTimeout> | undefined;
+    const endSubmitting = () => {
+        reg.submitting = false;
+        if (submitGuard) clearTimeout(submitGuard);
+        submitGuard = undefined;
+    };
+    pi.on("agent_start", () => {
+        cancelPendingStart();
+        endSubmitting(); // the submitted prompt is running; its notices rode in it (before_agent_start)
+        reg.closed = false; // a run in this session: any switch that began was cancelled
+    });
     pi.on("agent_end", () => {
         reg.ending = true; // until pi-cc-steer's settle hands the run's notices on (deliverHeld)
     });
@@ -76,6 +89,7 @@ export function registerBackground(pi: ExtensionAPI): Background {
     // that prompt instead (before_agent_start below).
     pi.on("input", () => {
         cancelPendingStart();
+        reg.closed = false;
     });
     // A notice arriving a second time (re-sent after an abort that had not in fact cleared pi's queue) is hidden
     // from the transcript here and from the model in pi-cc-steer's context handler.
@@ -128,6 +142,18 @@ export function registerBackground(pi: ExtensionAPI): Background {
         deliverHeld: (withNextMessage) => deliverHeld(reg, pi, withNextMessage),
         setPersonPending: (check) => {
             reg.personPending = check;
+        },
+        promptSubmitted: () => {
+            reg.submitting = true;
+            cancelPendingStart();
+            // A submission that never starts a run (a command, a rejected prompt): stop holding after 10 s and
+            // let waiting notices start their turn.
+            if (submitGuard) clearTimeout(submitGuard);
+            submitGuard = setTimeout(() => {
+                endSubmitting();
+                deliverHeld(reg, pi, false);
+            }, 10_000);
+            submitGuard.unref?.();
         },
     };
 }

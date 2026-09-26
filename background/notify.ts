@@ -132,8 +132,8 @@ export function deliverNotice(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessa
         reg.held.push(notice);
         return;
     }
-    if (!reg.startsTurns) {
-        reg.waiting.push(notice); // the host's next prompt carries it
+    if (!reg.startsTurns || reg.submitting) {
+        reg.waiting.push(notice); // the next prompt carries it
         return;
     }
     startTurnWith(reg, pi, [notice]);
@@ -260,7 +260,7 @@ export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage
     const generation = reg.generation;
     setTimeout(() => {
         try {
-            if (reg.closed || reg.generation !== generation || !reg.isIdle() || reg.waiting.length === 0) return;
+            if (reg.closed || reg.submitting || reg.generation !== generation || !reg.isIdle() || reg.waiting.length === 0) return;
             startTurnWith(reg, pi, []);
         } catch {
             // session replaced meanwhile: its notices went with it
@@ -270,7 +270,7 @@ export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage
 
 /** Start one turn carrying every waiting notice and these, as one message (see combine). */
 export function startTurnWith(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notices: Notice[]): void {
-    if (reg.closed) {
+    if (reg.closed || reg.submitting) {
         reg.waiting.push(...notices);
         return;
     }

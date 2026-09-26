@@ -48,7 +48,7 @@ const SEND_NOW_KEYS = ["ctrl+enter", "alt+s"] as const;
 /** Marks a reply cut off by send-now, so its empty remains stay out of the model's context. */
 const CUT = "ccSteerInterrupted";
 
-type Pending = { text: string; kind?: Framing; how: "steer" | "prompt"; images: boolean };
+type Pending = { text: string; kind?: Framing; how: "steer" | "prompt"; images: boolean; settles: number };
 
 export default function (pi: ExtensionAPI) {
 	// Claude Code's background bash (Ctrl+B). It replaces pi's bash tool, so it can be switched off.
@@ -90,7 +90,7 @@ export default function (pi: ExtensionAPI) {
 		if (queue.length === 0) return;
 		const batch = queue;
 		queue = [];
-		pending.push({ text: batchKey(batch.map((q) => q.text)), kind, how, images: batch.some((q) => q.images.length > 0) });
+		pending.push({ text: batchKey(batch.map((q) => q.text)), kind, how, images: batch.some((q) => q.images.length > 0), settles: 0 });
 		const content = batchContent(batch) as Parameters<ExtensionAPI["sendUserMessage"]>[0];
 		// pi reports nothing back; if it refuses the prompt (no model, no key) it shows its own error.
 		pi.sendUserMessage(content, how === "steer" ? { deliverAs: "steer" } : undefined);
@@ -140,11 +140,16 @@ export default function (pi: ExtensionAPI) {
 		sendNow = false;
 		// An undelivered steer went back to pi's own queue when the run ended: drop its record so it cannot claim a
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
-		pending = pending.filter((p) => p.how === "prompt");
+		// A batch flushed during the run may still be on its way in (another extension's slow input handler): when
+		// it lands it starts the next run, so notices ride after it rather than starting a turn ahead of it.
+		const batchOnItsWay = pending.some((p) => p.how === "steer");
+		// A steer batch not yet arrived may still be on its way (another extension's slow input handler) and land as
+		// the next prompt: keep its record through this settle, and drop it at the next one (pi discarded it).
+		pending = pending.filter((p) => p.how === "prompt" || p.settles++ === 0);
 		const sending = queue.length > 0 && ctx.isIdle();
 		// Background finish notices not yet delivered: they ride in the next prompt when one is coming (after it,
 		// as in Claude Code); otherwise they start a turn once pi has fully stopped.
-		background?.deliverHeld(sending || interrupted || !ctx.isIdle());
+		background?.deliverHeld(sending || interrupted || batchOnItsWay || !ctx.isIdle());
 		if (!sending) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});
@@ -163,6 +168,11 @@ export default function (pi: ExtensionAPI) {
 				// Ctrl+B while a command runs moves it to the background, as in Claude Code; otherwise it is pi's
 				// cursor-left. Queued messages then go in at the tool boundary that this creates.
 				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
+				// Enter on something while pi is idle: it is about to become a prompt (or a command such as /new).
+				// Tell the engine now, before any extension processes it, so no notice turn starts in between.
+				if (keybindings.matches(data, "tui.input.submit") && ctx.isIdle() && ctx.ui.getEditorText().trim() !== "") {
+					background?.promptSubmitted();
+				}
 				if (e.isShowingAutocomplete?.()) return handleInput(data);
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
@@ -282,7 +292,13 @@ export default function (pi: ExtensionAPI) {
 			if (text === null) return;
 			// pi may append notes to a prompt that carries images, so for those the batch is the start of the text.
 			const i = pending.findIndex((p) => text === p.text || (p.images && text.startsWith(`${p.text}\n`)));
-			if (i === -1) return;
+			if (i === -1) {
+				// Not recognised: another extension may have rewritten a batch on its way in. It has arrived all the
+				// same, so it no longer holds notices back (the rewritten text is not framed).
+				const s = pending.findIndex((p) => p.how === "steer");
+				if (s !== -1) pending.splice(s, 1);
+				return;
+			}
 			const [p] = pending.splice(i, 1);
 			if (p.kind && typeof m.timestamp === "number") {
 				framings.byId.set(messageId(m.timestamp, text), p.kind);

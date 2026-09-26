@@ -50,8 +50,12 @@ export class BgRegistry {
     /** Bumped by anything that should cancel a pending "start a turn for these notices": a prompt, a run
      *  starting, a session switch or shutdown. */
     generation = 0;
-    /** A session switch or shutdown has begun: this session never starts another notice turn. */
+    /** A session switch or shutdown has begun: no notice turn starts (reset by the next input or run, in case
+     *  the switch was cancelled). */
     closed = false;
+    /** The person just submitted something in the TUI (seen at the Enter key, before any extension processes
+     *  it): no notice turn may start until that prompt's run starts, or it would be rejected. */
+    submitting = false;
     /** The person's own messages are on their way into pi (pi-cc-steer): notices wait so they never go ahead. */
     personPending: () => boolean = () => false;
     /** Notices that arrived while pi was busy, not yet handed to pi. */

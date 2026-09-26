@@ -327,6 +327,31 @@ void describe("cancelling and failures (regressions)", () => {
         }
     });
 
+    void it("Enter on a prompt holds notice turns until that prompt's run starts; its notices ride in it", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        h.bg.promptSubmitted();
+        await h.tools.get("bash")!.execute("tc-49", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+        assert.equal(notices(), 0, "no turn while the person's prompt is being prepared");
+        const r = (await h.handlers.get("before_agent_start")!({} as never, uiCtx)) as unknown as { message?: { content: string } };
+        assert.match(r.message!.content, /<task-notification>/, "it rides in that prompt");
+        await h.handlers.get("agent_start")!({} as never, uiCtx);
+    });
+
+    void it("a cancelled session switch does not stop notice turns for good: the next input or run re-enables them", async () => {
+        for (const resume of ["input", "agent_start"]) {
+            const h = startExtension();
+            await h.handlers.get("session_start")!({}, { isIdle: () => true });
+            await h.handlers.get("session_before_switch")!({} as never, uiCtx); // then cancelled by another extension
+            await h.handlers.get(resume)!({ source: "interactive", text: "carry on" } as never, uiCtx);
+            await h.tools.get("bash")!.execute("tc-50", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+            await sleep(300);
+            assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1, `${resume}: idle notice starts a turn again`);
+        }
+    });
+
     void it("a job that finishes mid-run is held, then delivered once when the run ends", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, {});

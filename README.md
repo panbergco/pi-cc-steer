@@ -172,11 +172,14 @@ The small differences that remain:
   "Operation aborted" shows just the note.
 - **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
-- **A notice turn can collide with a slow extension.** A finish notice starts a turn when pi is idle. If, at that
-  moment, you submit a message and *another* extension is still processing it (a slow input handler), pi rejects
-  your message with "Agent is already processing" — pi has no signal an extension can see for a prompt being
-  prepared. pi-cc-steer itself never delays input. This only affects the interactive TUI; in RPC, print or SDK use
-  notices never start turns.
+- **Notice turns and other extensions.** A finish notice starts a turn when pi is idle. pi has no "prompt being
+  prepared" state, so pi-cc-steer watches for Enter in the editor: anything you submit there, including commands such
+  as `/new`, holds notice turns until it starts, and the notices then ride in it. A prompt that does *not* come from
+  the editor (another extension's own prompt) while a third extension's input handler is slow can still collide, and
+  pi then rejects it with "Agent is already processing". In RPC, print or SDK use notices never start turns.
+- **Notices behind other extensions' steering messages.** pi hands the model one steering message per request by
+  default. If another extension has queued its own, a notice waits behind it, and a message you queue after that
+  waits one request longer.
 - **Nothing is persisted.** Queued messages, and finish notices not yet delivered, live in memory, as pi's own queue does: `/reload`, exit or
   switching sessions drops them. If pi refuses the queued prompt (no model, no API key), pi shows its error and the
   text is not put back.
