@@ -1,12 +1,16 @@
 # pi-cc-steer
 
-**Talk to [pi](https://pi.dev) while it works, the way you talk to Claude Code.**
+**Talk to [pi](https://pi.dev) while it works, the way you talk to Claude Code — and send long commands to the
+background with Ctrl+B.**
 
 Messages you type while pi is working reach the model **framed the way Claude Code frames them**: "the user sent
 this while you were working — respond to it once your current task is done". They go in together after the current
 tool batch, or right away with **Ctrl+Enter** or **Esc**, which interrupt the current step the way Claude Code does:
 one dim "Interrupted" line, not an error. Your transcript keeps your plain text, and ↑ pulls queued messages back into
 the editor while they wait.
+
+A command that runs too long no longer holds you up: press **Ctrl+B** and it moves to the background. The model carries
+on, anything you queued goes in, and the model is told when the command finishes.
 
 ## See it
 
@@ -61,6 +65,9 @@ Or straight from GitHub: `pi install git:github.com/panbergco/pi-cc-steer`.
 
 Then `/reload`, or start a new session. It needs no settings change and works with pi's default `steeringMode`.
 
+Background bash replaces pi's built-in `bash` tool. To keep pi's own and use only the steering, start pi with
+`PI_CC_STEER_BACKGROUND=0`.
+
 ## How it works
 
 | You do | What happens |
@@ -91,6 +98,29 @@ Under the hood it uses only public pi extension APIs:
 The logic lives in `steer.ts`, which has no pi imports and is covered by `npm test`. `index.ts` connects it to pi;
 `index.test.ts` drives its handlers with a stub pi, and the rest is tested by driving real pi sessions.
 
+## Background commands
+
+Modelled on Claude Code's background bash:
+
+| You do | What happens |
+|---|---|
+| A command is still running after 2 s | A hint appears under the editor: `(ctrl+b to run in background)` (`ctrl+b ctrl+b` inside tmux, where Ctrl+B is the prefix). |
+| **Ctrl+B** (or Ctrl+Shift+B, or `/bg`) while it runs | The command keeps running with its output going to a log file. The model is told it was backgrounded and carries on; messages you queued go in at that point. With nothing running, Ctrl+B is still cursor-left. |
+| The command reaches its timeout (120 s by default) | It moves to the background instead of being killed. |
+| A background command finishes | The model gets one notice with its status, exit code, output tail and log path — at the next tool boundary, or as a new turn if pi is idle. |
+| Esc, or a send-now, while a command runs in the foreground | The command is stopped, as in Claude Code. |
+| You type a message while a command runs | It waits for the command, as in Claude Code; press Ctrl+B to move on sooner. |
+
+The model gets `run_in_background` on `bash` for commands it knows are long, plus `bg_list`, `bg_output` and `bg_stop`.
+The status bar counts running, finished and failed background commands (`▶ 1 · ✓ 2`); `/bg-tasks` lists them.
+Background commands are stopped when the session ends. Logs go to `pi-bg-tasks/` in the system temp directory
+(`TMPDIR`), and a command whose log passes 64 MiB is stopped.
+
+The engine is adapted from [pi-bg-tasks](https://github.com/cyzlmh/pi-extensions/tree/main/pi-bg-tasks) (MIT, © cyzlmh),
+itself a fork of [pi-patty-bg-tasks](https://github.com/patty-io/pi-patty-bg-tasks) (MIT, © patty.io). Changes: Ctrl+B
+through pi-cc-steer's editor, typing no longer backgrounds a command, logs follow `TMPDIR`, an interrupted command reads
+as pi's own does, and the macOS sandbox display helper is dropped.
+
 ## Compared with Claude Code
 
 The behaviour is modelled on Claude Code's handling of messages typed while it works. No Claude Code code is included,
@@ -108,6 +138,9 @@ and the text the model sees is original.
 | Messages queued by other extensions | not applicable | one at a time | batched too | **left at pi's default** |
 | Slash commands typed mid-turn | held, run one by one afterwards | run by pi | run by pi | run by pi |
 | Queued images restored when editing | yes | no | no | no, they stay queued |
+| Move a running command to the background | Ctrl+B | — | — | **Ctrl+B** (or Ctrl+Shift+B, `/bg`) |
+| A command that hits its timeout | moves to the background | killed | killed | **moves to the background** |
+| Notice when a background command finishes | yes | — | — | **yes** |
 
 The small differences that remain:
 
@@ -147,6 +180,13 @@ The small differences that remain:
 - **Editors.** An extension that replaces the editor after pi-cc-steer loads removes its keys; a modal (vim-style)
   editor loses Esc while messages wait.
 
+- **Background commands, not yet like Claude Code:** no warning when a background command sits waiting on an
+  interactive prompt (Claude Code notices after 45 s), `sleep` is not treated specially, the log cap is 64 MiB
+  (Claude Code: 5 GB), and there is no interactive task manager — `/bg-tasks` prints a list.
+- **Other bash replacements.** Extensions that also replace pi's `bash` tool (for example pi-bg-tasks,
+  pi-patty-bg-tasks, pi-background-bash) conflict with this one: use one, or start pi with
+  `PI_CC_STEER_BACKGROUND=0`.
+
 ## Works with
 
 Editor add-ons such as status bars and footers, because it wraps whatever editor is already installed.
@@ -154,7 +194,7 @@ Editor add-ons such as status bars and footers, because it wraps whatever editor
 It does **not** combine with other extensions that take over mid-turn input, such as
 [pi-queue-steer](https://github.com/tmustier/pi-queue-steer) or pi-queue-picker. Use one or the other. pi-queue-steer is
 the richer choice if you want a visible, reorderable queue with separate steering and follow-up lanes. pi-cc-steer is
-the smaller one (about 400 lines) if you want Claude Code's behaviour and nothing else.
+the smaller one if you want Claude Code's behaviour and nothing else.
 
 Only interactive input is queued. RPC mode, print mode and messages sent by other extensions are never queued, though
 the framing of an earlier batch still applies to every request that carries it.
@@ -162,10 +202,10 @@ the framing of an earlier batch still applies to every request that carries it.
 ## Development
 
 ```bash
-npm install && npm test    # steer.test.ts (pure logic) and index.test.ts (the pi handlers, driven with a stub pi)
+npm install && npm test    # steer.test.ts, index.test.ts, and background/test (the background engine)
 pi -e ./index.ts           # try it in one session without installing
 ```
 
 ## License
 
-MIT
+MIT. `background/` is adapted from pi-bg-tasks and keeps its licence and copyright notices in `background/LICENSE`.

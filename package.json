@@ -1,17 +1,19 @@
 {
   "name": "pi-cc-steer",
-  "version": "0.1.10",
-  "description": "Claude Code-style mid-turn steering for pi: messages typed while the agent works go in together at the next tool boundary, framed for the model, editable with up or esc.",
+  "version": "0.2.0",
+  "description": "Claude Code-style steering and background bash for pi: messages typed while the agent works go in together at the next tool boundary, framed for the model; Ctrl+Enter sends now; Ctrl+B moves a running command to the background.",
   "type": "module",
   "license": "MIT",
   "author": "panbergco",
   "keywords": [
-    "pi-package",
-    "pi-extension",
+    "background",
+    "bash",
+    "claude-code",
     "pi-coding-agent",
-    "steering",
+    "pi-extension",
+    "pi-package",
     "queue",
-    "claude-code"
+    "steering"
   ],
   "repository": {
     "type": "git",
@@ -24,11 +26,13 @@
   "files": [
     "index.ts",
     "steer.ts",
+    "background/*.ts",
+    "background/LICENSE",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test steer.test.ts index.test.ts"
+    "test": "node --test steer.test.ts index.test.ts background/test/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -36,7 +40,8 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.87.1",
-    "@earendil-works/pi-tui": "^0.87.1"
+    "@earendil-works/pi-tui": "^0.87.1",
+    "typebox": "^1.3.27"
   },
   "pi": {
     "extensions": [

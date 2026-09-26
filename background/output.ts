@@ -1,0 +1,115 @@
+/*
+ * Background bash for pi-cc-steer. Adapted from pi-bg-tasks 0.1.4 (MIT, © patty.io, © cyzlmh;
+ * https://github.com/cyzlmh/pi-extensions), itself a fork of pi-patty-bg-tasks. See ./LICENSE.
+ */
+/**
+ * Log-file readers: bounded tails, ANSI stripping, and a live-tail poller
+ * that feeds a tool's onUpdate streaming callback.
+ */
+
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+import { FOREGROUND_TAIL_BYTES } from "./types.ts";
+
+/**
+ * Read the tail of a log file, bounded by maxChars. Only the last maxChars
+ * bytes are read (O(maxChars), not O(fileSize)). Opens once and fstats the
+ * descriptor — no separate path-stat, so no stat-then-read race.
+ */
+export function readBoundedTail(logPath: string, maxChars: number): string {
+    let fd: number;
+    try {
+        fd = openSync(logPath, "r");
+    } catch {
+        return "(no output yet)";
+    }
+    try {
+        const { size } = fstatSync(fd);
+        if (size === 0) return "(no output yet)";
+        const toRead = Math.min(size, maxChars);
+        const buf = Buffer.alloc(toRead);
+        readSync(fd, buf, 0, toRead, Math.max(0, size - toRead));
+        const body = buf.toString("utf-8");
+        return size > maxChars
+            ? `...[truncated, showing last ${maxChars} chars]\n${body}`
+            : body;
+    } catch {
+        return "(no output yet)";
+    } finally {
+        closeSync(fd);
+    }
+}
+
+// Terminal escape/control sequences stripped from previews and progress
+// lines, so crafted job output cannot inject escapes into the TUI or the
+// agent's context. The leading ESC is essential - without it these
+// would eat literal `[...]`/`]...` like JSON.
+const ANSI_CSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const ANSI_OSC = /\u001b\][\s\S]*?(?:\u0007|\u001b\\)/g;
+// Remaining C0/C1 control chars and DEL (newlines handled by the caller).
+const CONTROL_CHARS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+
+/** Strip ANSI escape sequences and control chars from job output. */
+export function stripAnsi(s: string): string {
+    return s.replace(ANSI_CSI, "").replace(ANSI_OSC, "").replace(CONTROL_CHARS, "");
+}
+
+/** The last non-empty line of a log's tail, ANSI-stripped, with `\r`
+ *  progress-bar redraws collapsed to their final segment. Returns "" when
+ *  there's no output yet. */
+export function readLastLine(logPath: string, scanBytes = 2_048): string {
+    const tail = readBoundedTail(logPath, scanBytes);
+    if (tail === "(no output yet)") return "";
+    const lines = stripAnsi(tail).split(/[\r\n]+/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].replace(/\t/g, " ").trim();
+        if (line.length > 0) return line;
+    }
+    return "";
+}
+
+/** A tool's streaming-update callback (text-only partial results). */
+export type ToolTextUpdate = (update: {
+    content: { type: "text"; text: string }[];
+    details: undefined;
+}) => void;
+
+/**
+ * Stream a log file's live tail into a tool's onUpdate callback. Polls the
+ * file (written fd-direct by the child) and emits only on change. Returns
+ * the poller's stop handle.
+ */
+export function streamLog(
+    logPath: string,
+    onUpdate: ToolTextUpdate | undefined,
+    intervalMs = 1_000
+): { stop: () => void } {
+    let lastSize = 0;
+    let lastContent = "";
+    let stopped = false;
+
+    const timer = setTimeout(function tick() {
+        if (stopped) return;
+        try {
+            const { size } = statSync(logPath);
+            if (size !== lastSize) {
+                lastSize = size;
+                const content = readBoundedTail(logPath, FOREGROUND_TAIL_BYTES);
+                if (content !== lastContent) {
+                    lastContent = content;
+                    onUpdate?.({ content: [{ type: "text", text: content }], details: undefined });
+                }
+            }
+        } catch {
+            // File not yet created — retry next tick.
+        }
+        if (!stopped) timer.refresh();
+    }, intervalMs);
+    timer.unref();
+
+    return {
+        stop() {
+            stopped = true;
+            clearTimeout(timer);
+        },
+    };
+}

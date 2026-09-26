@@ -14,6 +14,9 @@
  *   nothing held still interrupts, as before; an interruption other than send-now, seen at the end of a
  *   turn, returns the held messages' text to the editor instead of sending them, as pi does with its own queue.
  *
+ * - Ctrl+B while a bash command runs moves it to the background (Claude Code's key; press it twice inside
+ *   tmux). The model is told, carries on, and is notified when the command finishes. See background/.
+ *
  * Works without changing pi's `steeringMode`: the batch is one message, so one-at-a-time
  * delivers all of it. Commands (`/…`) and shell input (`!…`) keep pi's own handling.
  */
@@ -34,6 +37,7 @@ import {
 	type Queued,
 	textOf,
 } from "./steer.ts";
+import { registerBackground } from "./background/index.ts";
 
 const ENTRY = "cc-steer.mid-turn";
 const MARK = "cc-steer.interrupted";
@@ -47,6 +51,8 @@ const CUT = "ccSteerInterrupted";
 type Pending = { text: string; kind?: Framing; how: "steer" | "prompt"; images: boolean };
 
 export default function (pi: ExtensionAPI) {
+	// Claude Code's background bash (Ctrl+B). It replaces pi's bash tool, so it can be switched off.
+	const background = process.env.PI_CC_STEER_BACKGROUND === "0" ? undefined : registerBackground(pi);
 	let queue: Queued[] = [];
 	/** Batches handed to pi and not yet seen arriving as a user message. */
 	let pending: Pending[] = [];
@@ -150,6 +156,9 @@ export default function (pi: ExtensionAPI) {
 				const e = editor as typeof editor & { isShowingAutocomplete?: () => boolean; getCursor?: () => { line: number } };
 				if (e.isShowingAutocomplete?.()) return handleInput(data);
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
+				// Ctrl+B while a command runs moves it to the background, as in Claude Code; otherwise it is pi's
+				// cursor-left. Queued messages then go in at the tool boundary that this creates.
+				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
 					// Esc with messages waiting sends them now, as in Claude Code (a bare Esc still just interrupts).
 					if (keybindings.matches(data, "app.interrupt") && sendNowFromEditor(ctx)) return;

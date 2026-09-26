@@ -1,0 +1,252 @@
+/**
+ * Extension smoke test with a mock ExtensionAPI: registration surface,
+ * run_in_background → completion notification, foreground quick path,
+ * Ctrl+Shift+B manual background, typing leaves the command running, and
+ * silent session-shutdown kills.
+ */
+
+import { describe, it, after } from "node:test";
+import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
+import { registerBackground } from "../index.ts";
+import { EVENT } from "../types.ts";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** A process marker unique to this test run, so pgrep can't hit strangers. */
+const MARKER = `bg-tasks-shutdown-test-${process.pid}`;
+const WATCH_CMD = `while true; do sleep 1; done # ${MARKER}`;
+
+function liveMarkedProcesses(): number {
+    try {
+        const out = execSync(
+            `pgrep -f "[w]hile true; do sleep 1; done # ${MARKER}" | wc -l`,
+            { encoding: "utf-8" }
+        );
+        return Number.parseInt(out.trim(), 10);
+    } catch {
+        return 0;
+    }
+}
+
+interface CapturedTool {
+    name: string;
+    execute: (
+        toolCallId: string,
+        params: unknown,
+        signal: AbortSignal | undefined,
+        onUpdate: unknown,
+        ctx: unknown
+    ) => Promise<{ content: { type: "text"; text: string }[] }>;
+}
+
+type SessionHandler = (event: { reason?: string }, ctx: unknown) => Promise<void>;
+type ShortcutHandler = (ctx: unknown) => Promise<void> | void;
+
+function makePi() {
+    const tools = new Map<string, CapturedTool>();
+    const handlers = new Map<string, SessionHandler>();
+    const shortcuts = new Map<string, ShortcutHandler>();
+    const commands = new Map<string, unknown>();
+    const renderers = new Map<string, unknown>();
+    const messages: { customType: string; content: string; details?: { status?: string } }[] = [];
+    const pi = {
+        registerTool(def: CapturedTool) {
+            tools.set(def.name, def);
+        },
+        registerShortcut(key: string, opts: { handler: ShortcutHandler }) {
+            shortcuts.set(key, opts.handler);
+        },
+        registerCommand(name: string, opts: unknown) {
+            commands.set(name, opts);
+        },
+        registerMessageRenderer(customType: string, renderer: unknown) {
+            renderers.set(customType, renderer);
+        },
+        on(event: string, handler: SessionHandler) {
+            handlers.set(event, handler);
+        },
+        sendMessage(msg: { customType: string; content: string }) {
+            messages.push(msg);
+        },
+    };
+    return { pi, tools, handlers, shortcuts, commands, renderers, messages };
+}
+
+const uiCtx = {
+    cwd: process.cwd(),
+    ui: {
+        notify() {},
+        setWidget() {},
+        setStatus() {},
+        theme: { fg: (_c: string, t: string) => t },
+    },
+};
+
+function startExtension() {
+    const h = makePi();
+    registerBackground(h.pi as never);
+    return h;
+}
+
+void describe("registration surface", () => {
+    void it("registers the bash override, three task tools, shortcut, commands, renderer", () => {
+        const h = startExtension();
+        assert.deepEqual([...h.tools.keys()].sort(), ["bash", "bg_list", "bg_output", "bg_stop"]);
+        assert.ok(h.shortcuts.has("ctrl+shift+b"), "Ctrl+Shift+B (Ctrl+B is pi's cursor-left)");
+        assert.ok(h.commands.has("bg"));
+        assert.ok(h.commands.has("bg-tasks"));
+        assert.ok(h.renderers.has(EVENT.taskNotification));
+        assert.ok(h.handlers.has("session_start"));
+        assert.ok(h.handlers.has("session_shutdown"));
+    });
+});
+
+void describe("bash run_in_background → completion notification", () => {
+    void it("starts a job, and its exit delivers a <task-notification>", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+
+        const bash = h.tools.get("bash")!;
+        const started = await bash.execute(
+            "tc-1",
+            { command: "echo hello-bg", run_in_background: true },
+            undefined,
+            undefined,
+            uiCtx
+        );
+        const id = /with ID: (bash-[0-9a-z]{8})\./.exec(started.content[0].text)?.[1];
+        assert.ok(id, `task id in result, got: ${started.content[0].text}`);
+
+        await sleep(500); // let the exit handler fire
+
+        const notifications = h.messages.filter((m) => m.customType === EVENT.taskNotification);
+        assert.equal(notifications.length, 1, "exactly one completion notification");
+        assert.ok(notifications[0].content.includes(`<task_id>${id}</task_id>`));
+        assert.ok(notifications[0].content.includes("<status>completed</status>"));
+        assert.ok(notifications[0].content.includes("hello-bg"), "tail preview carries output");
+
+        // The outcome is visible via the tools.
+        const list = await h.tools.get("bg_list")!.execute("tc-2", {}, undefined, undefined, uiCtx);
+        assert.ok(list.content[0].text.includes(id));
+        const out = await h.tools.get("bg_output")!.execute(
+            "tc-3",
+            { task_id: id },
+            undefined,
+            undefined,
+            uiCtx
+        );
+        assert.ok(out.content[0].text.includes("hello-bg"));
+    });
+});
+
+void describe("foreground bash", () => {
+    void it("quick commands return output inline within the 2s window", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        const res = await h.tools.get("bash")!.execute(
+            "tc-10",
+            { command: "echo quick-out" },
+            undefined,
+            undefined,
+            uiCtx
+        );
+        assert.equal(res.content[0].text.trim(), "quick-out");
+        assert.equal(h.messages.length, 0, "no notification for foreground completion");
+    });
+
+    void it("a failing quick command throws its output", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        await assert.rejects(
+            h.tools.get("bash")!.execute(
+                "tc-11",
+                { command: "echo boom >&2; exit 3" },
+                undefined,
+                undefined,
+                uiCtx
+            ),
+            /boom/
+        );
+    });
+
+    void it("Ctrl+Shift+B backgrounds a running foreground command", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        const bash = h.tools.get("bash")!;
+        const pending = bash.execute(
+            "tc-12",
+            { command: `sleep 30 # ${MARKER}-fg` },
+            undefined,
+            undefined,
+            uiCtx
+        );
+        await sleep(2_500); // past the quick-completion window
+        await h.shortcuts.get("ctrl+shift+b")!(uiCtx);
+        const res = await pending;
+        const id = /with ID: (bash-[0-9a-z]{8})\./.exec(res.content[0].text)?.[1];
+        assert.ok(id, `manually backgrounded, got: ${res.content[0].text}`);
+        assert.ok(res.content[0].text.includes("manually backgrounded"));
+
+        // It's a tracked background job now; clean up via bg_stop.
+        const stopped = await h.tools.get("bg_stop")!.execute(
+            "tc-13",
+            { task_id: id },
+            undefined,
+            undefined,
+            uiCtx
+        );
+        assert.ok(stopped.content[0].text.includes("stopped"));
+        assert.equal(
+            h.messages.filter((m) => m.customType === EVENT.taskNotification).length,
+            0,
+            "a deliberate stop sends no notification"
+        );
+    });
+});
+
+void describe("typing while a command runs", () => {
+    void it("registers no input hook: the message waits and the command keeps running (Claude Code's default)", () => {
+        const h = startExtension();
+        assert.equal(h.handlers.has("input"), false);
+    });
+});
+
+void describe("session_shutdown", () => {
+    void it("kills running tasks silently on any reason", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        const bash = h.tools.get("bash")!;
+        const started = await bash.execute(
+            "tc-20",
+            { command: WATCH_CMD, run_in_background: true },
+            undefined,
+            undefined,
+            uiCtx
+        );
+        const id = /with ID: (bash-[0-9a-z]{8})\./.exec(started.content[0].text)?.[1];
+        assert.ok(id);
+        assert.ok(liveMarkedProcesses() > 0, "task process is running");
+
+        await h.handlers.get("session_shutdown")!({ reason: "reload" }, {});
+        await sleep(200);
+
+        assert.equal(liveMarkedProcesses(), 0, "no orphaned process survives");
+        assert.equal(
+            h.messages.filter((m) => m.customType === EVENT.taskNotification).length,
+            0,
+            "silent kill — no <task-notification> on the way out"
+        );
+        const list = await h.tools.get("bg_list")!.execute("tc-21", {}, undefined, undefined, uiCtx);
+        assert.ok(list.content[0].text.includes("killed"), `task ended up killed, got: ${list.content[0].text}`);
+    });
+});
+
+after(() => {
+    // Best-effort cleanup if a test failed mid-flight.
+    try {
+        execSync(`pkill -f "${MARKER}" || true`);
+    } catch {
+        /* already gone */
+    }
+});

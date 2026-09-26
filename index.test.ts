@@ -12,6 +12,11 @@ function setup() {
 		registerEntryRenderer() {},
 		appendEntry() {},
 		sendUserMessage: (c: unknown) => sent.push(c),
+		registerTool() {},
+		registerShortcut() {},
+		registerCommand() {},
+		registerMessageRenderer() {},
+		sendMessage() {},
 	};
 	ext(pi);
 	const state = { idle: false, editor: "" };
