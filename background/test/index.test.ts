@@ -352,6 +352,28 @@ void describe("cancelling and failures (regressions)", () => {
         }
     });
 
+    void it("a command's hold timer that outlives its session (/new) does not crash pi", async () => {
+        const h = startExtension();
+        let stale = false;
+        await h.handlers.get("session_start")!({}, {
+            isIdle: () => {
+                if (stale) throw new Error("This extension ctx is stale after session replacement or reload.");
+                return true;
+            },
+        });
+        h.bg.promptSubmitted("/new", "interactive", "command");
+        stale = true; // pi replaced the session without this extension hearing of it first
+        const crashes: unknown[] = [];
+        const onCrash = (e: unknown) => crashes.push(e);
+        process.on("uncaughtException", onCrash);
+        try {
+            await sleep(5_300);
+        } finally {
+            process.off("uncaughtException", onCrash);
+        }
+        assert.deepEqual(crashes, [], "no uncaught error from the timer");
+    });
+
     void it("a prompt that reached pi idle keeps notices back until its run starts (later handlers, template expansion)", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });

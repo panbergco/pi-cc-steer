@@ -14,7 +14,8 @@ on, anything you queued goes in, and the model is told when the command finishes
 
 ## See it
 
-**1 · Typed while the agent works.** Three messages wait above the editor while `./check.sh lint` runs.
+**1 · Typed while the agent works.** Three messages wait above the editor while `./check.sh lint` runs. After 2 s
+the hint under the editor offers Ctrl+B.
 
 ![Three messages waiting above the editor while a tool runs](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/1-queued.png)
 
@@ -22,8 +23,8 @@ on, anything you queued goes in, and the model is told when the command finishes
 
 ![The waiting messages pulled back into the editor](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/2-edit.png)
 
-**3 · Delivered together.** When `lint` finishes they go in as one message. The model plans "test execution before
-build", then ends with the three-line summary that was asked for, including the largest file.
+**3 · Delivered together.** When `lint` finishes they go in as one message. The model carries on with the build, looks
+up the largest file, and ends with the three-line summary that was asked for.
 
 ![The messages delivered as one and every point answered](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/3-delivered.png)
 
@@ -31,6 +32,16 @@ build", then ends with the three-line summary that was asked for, including the 
 `Interrupted` line appears, and the new instruction runs straight away.
 
 ![Esc sends the queued message now: lint is interrupted and the tests run](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/4-send-now.png)
+
+**5 · Ctrl+B.** A long `./check.sh e2e` in the foreground; Ctrl+B moves it to the background. The model is told and
+hands back control, and `▶ 1` under the footer counts the running job.
+
+![Ctrl+B moves a running command to the background](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/5-ctrl-b.png)
+
+**6 · Told when it finishes.** Here the model starts `e2e` in the background by itself. When the command finishes, the
+model gets a notice and reports the result; `✓ 1` counts the finished job.
+
+![The model is notified when a background command finishes](https://raw.githubusercontent.com/panbergco/pi-cc-steer/main/assets/6-notice.png)
 
 ## Do you need it?
 

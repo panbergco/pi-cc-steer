@@ -85,6 +85,8 @@ export function registerBackground(pi: ExtensionAPI): Background {
     const close = () => {
         reg.closed = true;
         cancelPendingStart();
+        for (const s of reg.submissions) if (s.timer) clearTimeout(s.timer);
+        reg.submissions = [];
     };
     for (const e of ["session_before_switch", "session_before_fork", "session_shutdown"] as const) {
         pi.on(e as "session_shutdown", close);
@@ -114,7 +116,18 @@ export function registerBackground(pi: ExtensionAPI): Background {
 
     // ── Session start ─────────────────────────────────────────────
     pi.on("session_start", async (_event, ctx) => {
-        if (typeof ctx?.isIdle === "function") reg.isIdle = () => ctx.isIdle();
+        // A timer can outlive its session (replaced by /new, a fork, a resume or a reload); pi then throws on any
+        // use of the old ctx. Such a session is closed: never idle, never starts a turn.
+        if (typeof ctx?.isIdle === "function") {
+            reg.isIdle = () => {
+                try {
+                    return ctx.isIdle();
+                } catch {
+                    reg.closed = true;
+                    return false;
+                }
+            };
+        }
         reg.startsTurns = ctx?.mode === undefined || ctx.mode === "tui";
         reg.nonInteractive = detectNonInteractive(
             process.argv,
