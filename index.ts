@@ -37,7 +37,7 @@ import {
 	type Queued,
 	textOf,
 } from "./steer.ts";
-import { registerBackground } from "./background/index.ts";
+import { registerBackground, segmentOf } from "./background/index.ts";
 
 const ENTRY = "cc-steer.mid-turn";
 const MARK = "cc-steer.interrupted";
@@ -174,7 +174,8 @@ export default function (pi: ExtensionAPI) {
 	/** pi put its queued messages back in the editor (Esc, or its dequeue key): batches of ours among them are not on
 	 *  their way any more. */
 	const queueRestored = (restored: string) => {
-		pending = pending.filter((p) => p.how !== "steer" || !restored.includes(p.text));
+		pending = pending.filter((p) => p.how !== "steer" || !segmentOf(restored, p.text));
+		background?.submissionsRestored(restored);
 	};
 
 	const installEditor = (ctx: ExtensionContext) => {

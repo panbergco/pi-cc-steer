@@ -22,7 +22,7 @@ import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
 import { deliverHeld, deliverMidRun, idsOf, noticeArrived, scheduleTurn, takeWaiting } from "./notify.ts";
-import { EVENT } from "./types.ts";
+import { EVENT, SUBMISSION_EXPIRY } from "./types.ts";
 import type { UiContext } from "./types.ts";
 
 /** What pi-cc-steer needs from the engine. */
@@ -43,6 +43,18 @@ export interface Background {
     promptSubmitted(text: string, source: "interactive" | "extension", kind?: "command"): void;
     /** A prompt reached pi-cc-steer's input handler (see Submission). */
     submissionReached(text: string, source: string, idle: boolean): void;
+    /** pi put queued input back in the editor; `restored` is what it put back. */
+    submissionsRestored(restored: string): void;
+}
+
+/** `text` is one of the messages pi joined into `restored` (it joins queued messages with a blank line). */
+export function segmentOf(restored: string, text: string): boolean {
+    return (
+        restored === text ||
+        restored.startsWith(`${text}\n\n`) ||
+        restored.endsWith(`\n\n${text}`) ||
+        restored.includes(`\n\n${text}\n\n`)
+    );
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -165,24 +177,27 @@ export function registerBackground(pi: ExtensionAPI): Background {
             const s: Submission = { text, source, reached: false };
             cancelPendingStart();
             reg.submissions.push(s);
-            // A message is held however long other extensions take over it: a notice turn started meanwhile would
-            // get it rejected. A command may never reach pi's input handlers, so it is held briefly.
-            if (kind !== "command") return;
-            s.timer = setTimeout(() => release((x) => x !== s), 5_000);
+            // A command may never reach pi's input handlers: held 5 s. Anything else is held until it is seen, or for
+            // 60 s (another extension swallowed it, or took longer than that over it).
+            const ms = kind === "command" ? SUBMISSION_EXPIRY.commandMs : SUBMISSION_EXPIRY.otherMs;
+            s.timer = setTimeout(() => release((x) => x !== s), ms);
             s.timer.unref?.();
         },
         submissionReached: (text, source, idle) => {
-            const unreached = reg.submissions.filter((s) => !s.reached);
-            // By text; else (another extension rewrote it on its way) the oldest from the same origin.
+            const mine = reg.submissions.filter((s) => !s.reached && s.source === source);
+            // By text, from the same origin; else, for something typed, the oldest one typed (another extension
+            // rewrote it on its way). pi-cc-steer's own batches are not guessed at: they expire instead.
             const s =
-                unreached.find((x) => text === x.text || text.startsWith(`${x.text}\n`)) ??
-                unreached.find((x) => x.source === source);
+                mine.find((x) => text === x.text || text.startsWith(`${x.text}\n`)) ??
+                (source === "interactive" ? mine[0] : undefined);
             if (!s) return;
-            // Older ones from the editor that have still not arrived were swallowed by another extension.
-            const dropped = s.source === "interactive" ? unreached.slice(0, unreached.indexOf(s)).filter((x) => x.source === "interactive" && !x.timer) : [];
             if (idle) s.reached = true;
             // pi busy: it is queued now (by pi-cc-steer, or by pi for a template): a notice sent later goes behind it.
-            release((x) => !dropped.includes(x) && (idle || x !== s));
+            release((x) => idle || x !== s);
+        },
+        submissionsRestored: (restored) => {
+            // pi put queued input back in the editor (e.g. input queued while it compacted): not on its way any more.
+            release((x) => x.reached || !segmentOf(restored, x.text));
         },
     };
 }

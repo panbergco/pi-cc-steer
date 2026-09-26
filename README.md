@@ -129,7 +129,8 @@ Background commands, and anything they started, are stopped when the session end
 SIGTERM, give the command and its children 5 seconds, then SIGKILL. Logs go to `pi-bg-tasks/` in the system temp
 directory (`TMPDIR`) and are deleted after 24 hours, at the start of a session. A command whose log passes 64 MiB is
 stopped at once (the size is checked every 0.25 s, so a very fast writer can overshoot by a few hundred MB before it is
-killed); a background log is then trimmed to 64 MiB, and a foreground one is deleted. A foreground result longer than
+killed); a background log is then trimmed to 64 MiB, and a foreground one is deleted. A command that finishes before
+the next check is not killed, but its log is trimmed the same way. A foreground result longer than
 12,000 characters names the log that keeps the full output.
 
 The engine is adapted from [pi-bg-tasks](https://github.com/cyzlmh/pi-extensions/tree/main/pi-bg-tasks) (MIT, © cyzlmh),
@@ -193,7 +194,8 @@ The small differences that remain:
     slow, can be rejected by pi with "Agent is already processing";
   - an extension loaded *after* pi-cc-steer that is slow over your message can let a notice go in ahead of it at a
     tool boundary (pi-cc-steer has already seen the message by then);
-  - a message another extension swallows holds notices until your next message reaches pi;
+  - a message another extension swallows holds notices for 60 s; one it takes longer than 60 s over can be rejected
+    by pi with "Agent is already processing" if a notice starts a turn meanwhile;
   - a batch of yours that another extension rewrites on its way in keeps notices back until the run ends; they then
     ride in your next prompt;
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;

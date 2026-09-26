@@ -381,6 +381,7 @@ test("runaway output: a command past the 64 MiB cap is killed; a background log 
 	const flood = "head -c 80000000 /dev/zero | tr '\\\\0' x; sleep 30";
 	const s = await session([
 		bash(flood, { run_in_background: true }),
+		bash("head -c 80000000 /dev/zero", { run_in_background: true }), // finishes before the watcher looks
 		bash(flood),
 		fauxAssistantMessage("done"),
 		fauxAssistantMessage("noted"),
@@ -392,10 +393,13 @@ test("runaway output: a command past the 64 MiB cap is killed; a background log 
 	const all = s.contexts.at(-1)!.map(text).join("\n");
 	assert.match(all, /Command stopped: output exceeded the size limit/, "the foreground call says why it stopped");
 	const logs = [...all.matchAll(/(\/[^\s"<>]*\.log)/g)].map((m) => m[1]);
-	const bgLog = logs.find((p) => existsSync(p));
-	assert.ok(bgLog, "the background job's log is kept");
-	assert.ok(statSync(bgLog).size <= 64 * 1024 * 1024 + 200, "trimmed to the cap");
-	assert.match(readFileSync(bgLog, "utf8").slice(-200), /exceeded the 64 MiB limit/);
+	await sleep(500);
+	const bgLogs = [...new Set(logs)].filter((p) => existsSync(p));
+	assert.equal(bgLogs.length, 2, "both background jobs' logs are kept");
+	for (const log of bgLogs) {
+		assert.ok(statSync(log).size <= 64 * 1024 * 1024 + 200, `trimmed to the cap: ${log}`);
+		assert.match(readFileSync(log, "utf8").slice(-200), /exceeded the 64 MiB limit/);
+	}
 	s.done();
 });
 

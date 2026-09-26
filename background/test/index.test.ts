@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { statSync, unlinkSync } from "node:fs";
 import { registerBackground } from "../index.ts";
-import { EVENT } from "../types.ts";
+import { EVENT, SUBMISSION_EXPIRY } from "../types.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -386,25 +386,61 @@ void describe("cancelling and failures (regressions)", () => {
         assert.match(r.message!.content, /<task-notification>/, "it rides in that prompt");
     });
 
-    void it("a submission another extension rewrote is still recognised; one it swallowed stops holding when a later one arrives", async () => {
-        const notices = (h: ReturnType<typeof startExtension>) => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+    void it("a submission another extension rewrote is still recognised", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
         h.bg.promptSubmitted("hello", "interactive");
         h.bg.submissionReached("hello, rewritten", "interactive", false);
         await h.tools.get("bash")!.execute("tc-53", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
         await sleep(300);
-        assert.equal(notices(h), 1, "rewritten: released");
-
-        const h2 = startExtension();
-        await h2.handlers.get("session_start")!({}, { isIdle: () => true });
-        h2.bg.promptSubmitted("swallowed", "interactive");
-        h2.bg.promptSubmitted("next", "interactive");
-        h2.bg.submissionReached("next", "interactive", false);
-        await h2.tools.get("bash")!.execute("tc-54", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
-        await sleep(300);
-        assert.equal(notices(h2), 1, "the swallowed one no longer holds");
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1, "released");
     });
+
+    void it("an earlier, slower submission keeps holding when a later one arrives first; one never seen expires", async () => {
+        const saved = { ...SUBMISSION_EXPIRY };
+        SUBMISSION_EXPIRY.otherMs = 800;
+        try {
+            const h = startExtension();
+            await h.handlers.get("session_start")!({}, { isIdle: () => true });
+            h.bg.promptSubmitted("FIRST", "interactive"); // still inside a slow extension (or swallowed by it)
+            h.bg.promptSubmitted("SECOND", "interactive");
+            h.bg.submissionReached("SECOND", "interactive", false);
+            await h.tools.get("bash")!.execute("tc-54", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+            await sleep(300);
+            const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+            assert.equal(notices(), 0, "FIRST still holds");
+            await sleep(700);
+            assert.equal(notices(), 1, "never seen: expired, and the notice starts a turn");
+        } finally {
+            Object.assign(SUBMISSION_EXPIRY, saved);
+        }
+    });
+
+    void it("pi-cc-steer's own batch does not use up a typed submission with the same text", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        h.bg.promptSubmitted("SAME", "interactive"); // typed again, still inside a slow extension
+        h.bg.promptSubmitted("SAME", "extension"); // pi-cc-steer forwards the first one
+        h.bg.submissionReached("SAME", "extension", false);
+        await h.tools.get("bash")!.execute("tc-56", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 0, "the typed one still holds");
+    });
+
+    void it("input pi puts back in the editor (e.g. queued while compacting) stops holding; a restore of other text does not", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        h.bg.promptSubmitted("PERSON", "interactive");
+        h.bg.submissionsRestored("OTHER PERSON MORE");
+        await h.tools.get("bash")!.execute("tc-57", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+        assert.equal(notices(), 0, "a restore that only contains the text is not it");
+        h.bg.submissionsRestored("PERSON\n\nsomething else queued");
+        await sleep(20);
+        assert.equal(notices(), 1, "put back: released");
+    });
+
 
     void it("a submission's hold: released when it reaches pi busy, or when its run starts if pi was idle", async () => {
         for (const idle of [false, true]) {

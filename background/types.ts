@@ -30,6 +30,8 @@ export const FOREGROUND_WATCH_INTERVAL_MS = 250;
  *  output, read the last 1 KiB and warn the model once if its last line looks like an interactive prompt. */
 export const STALL_TIMING = { checkMs: 5_000, afterMs: 45_000 };
 export const STALL_TAIL_BYTES = 1_024;
+/** How long a submission holds notices at most when it is never seen: a command, anything else (see promptSubmitted). */
+export const SUBMISSION_EXPIRY = { commandMs: 5_000, otherMs: 60_000 };
 
 /** Grace window between SIGTERM and SIGKILL on every stop path. */
 export const SIGTERM_GRACE_MS = 5_000;

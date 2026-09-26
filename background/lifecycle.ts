@@ -78,6 +78,14 @@ export function startBackgroundJob(args: {
                 truncateSync(job.logPath, MAX_LOG_BYTES);
                 appendFileSync(job.logPath, `\n[bg-tasks] output exceeded the ${MAX_LOG_BYTES / 1024 / 1024} MiB limit — task killed\n`);
             } catch { /* best-effort */ }
+        } else {
+            // Finished before the watcher's next look: the log can still be over the cap.
+            try {
+                if (statSync(job.logPath).size > MAX_LOG_BYTES) {
+                    truncateSync(job.logPath, MAX_LOG_BYTES);
+                    appendFileSync(job.logPath, `\n[bg-tasks] output exceeded the ${MAX_LOG_BYTES / 1024 / 1024} MiB limit — log trimmed\n`);
+                }
+            } catch { /* best-effort */ }
         }
         args.onExit?.(result);
         completeJob({

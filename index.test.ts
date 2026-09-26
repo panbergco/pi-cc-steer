@@ -158,7 +158,7 @@ async function editorOf(
 				h.state.editor = "";
 				this.onSubmit?.(text);
 			}
-			if (data === "\x1b" && !completing() && !h.state.idle) {
+			if ((data === "\x1b" && !completing() && !h.state.idle) || data === "\x1b[1;3A") {
 				const queued = opts.piQueue?.() ?? "";
 				if (queued) h.state.editor = [queued, h.state.editor].filter((t) => t.trim()).join("\n\n");
 			}
@@ -166,7 +166,7 @@ async function editorOf(
 	});
 	await h.handlers.session_start({}, h.ctx);
 	await sleep(10);
-	const keys: Record<string, string> = { "tui.input.submit": "\r", "app.interrupt": "\x1b" };
+	const keys: Record<string, string> = { "tui.input.submit": "\r", "app.interrupt": "\x1b", "app.message.dequeue": "\x1b[1;3A" };
 	const editor = factory({}, {}, { matches: (data: string, id: string) => keys[id] === data });
 	editor.onSubmit = () => {}; // what pi does after creating the editor
 	return editor;
@@ -343,4 +343,20 @@ test("a notice waits at a tool boundary where pi already has something queued", 
 	assert.equal(h.notices.length, 0, "behind another extension's queued message, and ahead of what the person sends next");
 	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}], context: { pendingMessages: [] } }, h.ctx);
 	assert.equal(h.notices.length, 1);
+});
+
+test("pi's dequeue key puts its queue back too; a restore that merely contains a batch's text does not release it", async () => {
+	for (const [restore, released] of [["PERSON", true], ["OTHER PERSON MORE", false]] as const) {
+		const h = await setup();
+		const editor = await editorOf(h, { piQueue: () => restore });
+		await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
+		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed
+		editor.handleInput("\x1b[1;3A"); // Alt+↑
+		await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+		h.state.idle = true;
+		await h.handlers.agent_settled({}, h.ctx);
+		await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+		await sleep(300);
+		assert.equal(h.notices.length, released ? 1 : 0, `${restore}: ${released ? "released" : "still on its way"}`);
+	}
 });

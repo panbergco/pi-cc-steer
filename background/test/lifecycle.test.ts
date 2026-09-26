@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { closeSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -226,6 +226,20 @@ void describe("stuck-prompt watcher", () => {
         assert.equal(looksLikePrompt("Continue? (y/n)\nnow downloading 40%"), false, "only the last line counts");
         assert.equal(looksLikePrompt("test case: Press Enter submits form\n"), false, "a finished line only mentions it");
         assert.equal(looksLikePrompt("Overwrite? (y/n) \n\n"), false, "output that moved on to new lines is not waiting");
+    });
+
+    void it("only new output counts as progress: a log that gets shorter does not restart the wait", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "stall-"));
+        const logPath = join(dir, "x.log");
+        writeFileSync(logPath, "downloading…\n".repeat(50) + "Overwrite existing file? (y/n) ");
+        const seen: string[] = [];
+        const stop = watchStall({ logPath } as never, (tail) => seen.push(tail), 50, 400);
+        await new Promise((r) => setTimeout(r, 200));
+        writeFileSync(logPath, "Overwrite existing file? (y/n) "); // rewritten shorter (e.g. a log rotated): no new output
+        await new Promise((r) => setTimeout(r, 380));
+        stop();
+        rmSync(dir, { recursive: true, force: true });
+        assert.equal(seen.length, 1, "warned 400 ms after the last growth, not 400 ms after the shrink");
     });
 
     void it("reports a quiet command sitting at a prompt once, and stays silent for a quiet command that is not", async () => {
