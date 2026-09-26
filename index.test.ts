@@ -31,6 +31,7 @@ async function setup() {
 		registerShortcut() {},
 		registerCommand() {},
 		registerMessageRenderer() {},
+		getCommands: () => [{ name: "ask", source: "prompt" }, { name: "model", source: "extension" }],
 		sendMessage: (m: { content: string }, opts: unknown) => (notices.push({ content: m.content, opts }), order.push("notice")),
 	};
 	ext(pi);
@@ -131,16 +132,22 @@ test("after a send-now, the notice rides after the person's message in the same 
 	assert.match(r.message.content, /<task-notification>/);
 });
 
-test("Enter in the editor while pi is idle holds a finish notice for that prompt instead of starting a turn", async () => {
-	const h = await setup();
+
+/** Install pi-cc-steer's editor over a fake one; returns something to type into. */
+async function editorOf(h: Awaited<ReturnType<typeof setup>>, autocomplete = () => false) {
 	h.ctx.mode = "tui";
 	let factory: any;
 	h.ctx.ui.setEditorComponent = (f: unknown) => (factory = f);
-	h.ctx.ui.getEditorComponent = () => () => ({ handleInput() {} });
+	h.ctx.ui.getEditorComponent = () => () => ({ handleInput() {}, isShowingAutocomplete: autocomplete });
 	await h.handlers.session_start({}, h.ctx);
-	await sleep(10); // the editor is installed after other extensions' session_start
-	const keybindings = { matches: (data: string, id: string) => id === "tui.input.submit" && data === "\r" };
-	const editor = factory({}, {}, keybindings);
+	await sleep(10);
+	const keys: Record<string, string> = { "tui.input.submit": "\r", "app.interrupt": "\x1b" };
+	return factory({}, {}, { matches: (data: string, id: string) => keys[id] === data });
+}
+
+test("Enter in the editor while pi is idle holds a finish notice for that prompt instead of starting a turn", async () => {
+	const h = await setup();
+	const editor = await editorOf(h);
 	h.state.idle = true;
 	h.state.editor = "hello";
 	editor.handleInput("\r"); // the person submits; another extension may still be processing it
@@ -174,17 +181,57 @@ test("a job finishing while the person's batch is still on its way does not star
 	assert.equal(h.notices.length, 0, "waits for the person's batch");
 });
 
-test("a batch that Esc put back in the editor stops holding notices back", async () => {
+test("a batch that Esc put back in the editor stops holding notices back — only after an Esc", async () => {
+	for (const pressedEsc of [true, false]) {
+		const h = await setup();
+		const editor = await editorOf(h);
+		await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
+		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed to pi
+		if (pressedEsc) editor.handleInput("\x1b");
+		h.state.editor = pressedEsc ? "PERSON" : "PERSON and more"; // Esc returned it; otherwise a draft mentioning it
+		h.ctx.signal.aborted = true;
+		await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
+		h.state.idle = true;
+		await h.handlers.agent_settled({}, h.ctx);
+		await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+		await sleep(300);
+		assert.equal(h.notices.length, pressedEsc ? 1 : 0, pressedEsc ? "the notice wakes the model" : "the batch may still be on its way");
+	}
+});
+
+test("Enter on !shell or on an autocomplete suggestion does not hold notices; Enter on a template holds them past 5 s, a command does not", async () => {
+	const cases: Array<[string, boolean, number, boolean]> = [
+		// text, autocomplete open, wait ms, held afterwards
+		["!ls", false, 300, false],
+		["see @fi", true, 300, false],
+		["/ask about it", false, 5300, true],
+		["/model", false, 5300, false],
+	];
+	for (const [text, autocomplete, wait, held] of cases) {
+		const h = await setup();
+		const editor = await editorOf(h, () => autocomplete);
+		h.state.idle = true;
+		h.state.editor = text;
+		editor.handleInput("\r");
+		await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+		await sleep(wait);
+		assert.equal(h.notices.length, held ? 0 : 1, `${text}: ${held ? "held" : "a turn starts"}`);
+	}
+});
+
+test("Enter while pi is busy: no notice goes in ahead of that message at a tool boundary; once queued, the hold ends", async () => {
 	const h = await setup();
-	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
-	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed to pi
-	h.ctx.mode = "tui";
-	h.state.editor = "PERSON"; // pi's Esc cleared its queue and returned the text to the editor
-	h.ctx.signal.aborted = true;
-	await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
-	h.state.idle = true;
-	await h.handlers.agent_settled({}, h.ctx);
+	const editor = await editorOf(h);
+	await h.handlers.agent_start({}, h.ctx);
 	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
-	await sleep(300);
-	assert.deepEqual(h.notices.map((n) => n.opts), [{ triggerTurn: true }], "the notice wakes the model");
+	await sleep(300); // held: pi is busy
+	h.state.editor = "PERSON";
+	editor.handleInput("\r"); // submitted; another extension may still be processing it
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	assert.equal(h.notices.length, 0, "not ahead of PERSON");
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx); // reaches pi-cc-steer
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // PERSON flushed here
+	await h.handlers.message_end({ message: { role: "user", content: [{ type: "text", text: "PERSON" }], timestamp: 1 } }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	assert.deepEqual(h.order.slice(-2), ["message", "notice"], "the person's message, then the notice");
 });

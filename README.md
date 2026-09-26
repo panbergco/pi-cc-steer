@@ -107,7 +107,7 @@ Modelled on Claude Code's background bash:
 | A command is still running after 2 s | A hint appears under the editor: `(ctrl+b to run in background)` (`ctrl+b ctrl+b` inside tmux, where Ctrl+B is the prefix). |
 | **Ctrl+B** (or Ctrl+Shift+B, or `/bg`) while it runs | The command keeps running with its output going to a log file. The model is told it was backgrounded and carries on; messages you queued go in at that point. With nothing running, Ctrl+B is still cursor-left. |
 | The command reaches its timeout (120 s by default) | It moves to the background instead of being killed. |
-| A background command finishes | The model gets one notice with its status, exit code, output tail and log path, as in Claude Code: at the next tool boundary if pi is busy (one notice per boundary, and never ahead of messages you queued — while yours are on their way in, notices wait), or as a new turn if pi is idle, including just after an Esc once pi has stopped (several notices then go in as one message, in one turn). If your message is about to start the next run, the notice goes in with it, after it. A notice an interruption wipes from pi's queue is sent again, and a copy that reaches the model twice is hidden the second time. In RPC, print or SDK use a notice never starts a turn by itself (the host drives the turns); it goes in with the host's next prompt. |
+| A background command finishes | The model gets one notice with its status, exit code, output tail and log path, as in Claude Code: at the next tool boundary if pi is busy (one notice per boundary, and not ahead of messages you submitted — while yours are on their way in, notices wait; see Known limits for the exceptions), or as a new turn if pi is idle, including just after an Esc once pi has stopped (several notices then go in as one message, in one turn). If your message is about to start the next run, the notice goes in with it, after it. A notice an interruption wipes from pi's queue is sent again, and a copy that reaches the model twice is hidden the second time. In RPC, print or SDK use a notice never starts a turn by itself (the host drives the turns); it goes in with the host's next prompt. |
 | A background command goes quiet at what looks like a prompt | After 45 s without new output, if the output stops on a line that looks like `(y/n)`, `[Y/n]`, `Press any key`, `Continue?`, `Overwrite?` or a "Do you…?" question, the model is told once, with the last output and how to re-run it non-interactively. This is Claude Code's rule, except that a line ending in a newline does not count (a prompt leaves the cursor on its line), so output that merely mentions "Press Enter" is not mistaken for one. It is still a guess: a quiet command whose last line happens to look like a prompt can be flagged. |
 | Esc, or a send-now, while a command runs in the foreground | The command and everything it started are stopped at once, as pi's own bash does. |
 | You type a message while a command runs | It waits for the command, as in Claude Code; press Ctrl+B to move on sooner. |
@@ -183,7 +183,12 @@ The small differences that remain:
   - a batch of yours that another extension rewrites on its way in keeps notices back until the run ends; they then
     ride in your next prompt;
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
-  - after a cancelled session switch, notices wait for your next message instead of starting a turn.
+  - after a cancelled session switch, notices wait for your next message instead of starting a turn;
+  - a prompt template or skill that another extension takes longer than it takes a command to handle is fine (held
+    until it starts), but a real command (`/model`, `/new`, …) is held for 5 s only.
+- **The stuck-prompt warning is a guess.** A background command whose output stops on a line that looks like a
+  prompt (for example `printf 'Press Enter submits form'; sleep 60`) is flagged although it is not waiting for input.
+  Claude Code has the same limitation.
 
   In RPC, print or SDK use notices never start turns; they ride in the host's next prompt.
 - **Notices behind other extensions' steering messages.** pi hands the model one steering message per request by

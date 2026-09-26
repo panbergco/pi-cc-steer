@@ -145,8 +145,9 @@ export default function (pi: ExtensionAPI) {
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
 		// pi's Esc puts queued messages that never reached the model back in the editor: a batch whose text is now
 		// there is not on its way any more.
-		const editorText = ctx.mode === "tui" ? ctx.ui.getEditorText() : "";
-		pending = pending.filter((p) => p.how !== "steer" || !editorText || !editorText.includes(p.text));
+		const editorText = escThisRun && ctx.mode === "tui" ? ctx.ui.getEditorText() : "";
+		escThisRun = false;
+		pending = pending.filter((p) => p.how !== "steer" || !editorText || !editorText.startsWith(p.text));
 		// A batch flushed during the run may still be on its way in (another extension's slow input handler): when
 		// it lands it starts the next run, so notices ride after it rather than starting a turn ahead of it.
 		const batchOnItsWay = pending.some((p) => p.how === "steer");
@@ -163,6 +164,19 @@ export default function (pi: ExtensionAPI) {
 		flush(ctx, "prompt", interrupted ? "interrupt" : undefined);
 	};
 
+	/** What a submission will do, for the notice hold: a message or a prompt template/skill starts a run; a command
+	 *  might not (held briefly); `!shell` never does (not held). */
+	const holdForSubmission = (text: string) => {
+		if (!background || text === "" || text.startsWith("!")) return;
+		if (!text.startsWith("/")) return background.promptSubmitted();
+		const name = text.slice(1).split(/\s/)[0];
+		const cmd = pi.getCommands().find((c) => c.name === name);
+		background.promptSubmitted(cmd && cmd.source !== "extension" ? undefined : "command");
+	};
+
+	/** Esc pressed during this run (pi then returns queued messages to the editor). */
+	let escThisRun = false;
+
 	const installEditor = (ctx: ExtensionContext) => {
 		if (ctx.mode !== "tui") return;
 		const previous = ctx.ui.getEditorComponent();
@@ -175,14 +189,12 @@ export default function (pi: ExtensionAPI) {
 				// Ctrl+B while a command runs moves it to the background, as in Claude Code; otherwise it is pi's
 				// cursor-left. Queued messages then go in at the tool boundary that this creates.
 				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
+				if (keybindings.matches(data, "app.interrupt") && !ctx.isIdle()) escThisRun = true;
+				if (e.isShowingAutocomplete?.()) return handleInput(data); // Enter here accepts a completion
 				// Enter on something: it is about to become a prompt, a queued message (which becomes a prompt if the run
 				// ends first) or a command such as /new. Tell the engine now, before any extension processes it, so no
-				// notice turn starts in between.
-				const submitted = ctx.ui.getEditorText().trim();
-				if (keybindings.matches(data, "tui.input.submit") && submitted !== "") {
-					background?.promptSubmitted(submitted.startsWith("/") ? "command" : undefined);
-				}
-				if (e.isShowingAutocomplete?.()) return handleInput(data);
+				// notice turn starts — or goes in — ahead of it.
+				if (keybindings.matches(data, "tui.input.submit")) holdForSubmission(ctx.ui.getEditorText().trim());
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
 					// Esc with messages waiting sends them now, as in Claude Code (a bare Esc still just interrupts).

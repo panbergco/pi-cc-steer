@@ -208,7 +208,7 @@ export function sendNotice(
  * their way into pi (pi-cc-steer does not even call this at a boundary where it queued them).
  */
 export function deliverMidRun(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
-    if (reg.personPending()) return;
+    if (reg.personPending() || reg.submitting) return;
     const n = reg.waiting.shift() ?? reg.held.shift();
     if (n) send(reg, pi, n, { deliverAs: "steer" });
 }
