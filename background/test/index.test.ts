@@ -86,8 +86,8 @@ const uiCtx = {
 
 function startExtension() {
     const h = makePi();
-    registerBackground(h.pi as never);
-    return h;
+    const bg = registerBackground(h.pi as never);
+    return { ...h, bg };
 }
 
 void describe("registration surface", () => {
@@ -285,18 +285,32 @@ void describe("cancelling and failures (regressions)", () => {
         assert.equal(count(), "0", "no survivor after shutdown");
     });
 
-    void it("a notice cleared by an abort is sent again once pi settles", async () => {
+    void it("stopping a job still gives its children the grace window to clean up", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        const done = `${process.env.TMPDIR ?? "/tmp"}/bg-grace-${process.pid}`;
+        const cmd = `bash -c "trap 'sleep 1; echo cleaned > ${done}; exit' TERM; while :; do sleep 0.2; done # ${MARKER}-grace" & wait`;
+        const started = await h.tools.get("bash")!.execute("tc-46", { command: cmd, run_in_background: true }, undefined, undefined, uiCtx);
+        const id = /with ID: (bash-[0-9a-z]{8})\./.exec(started.content[0].text)?.[1];
+        await sleep(500);
+        await h.tools.get("bg_stop")!.execute("tc-47", { task_id: id }, undefined, undefined, uiCtx);
+        await sleep(200);
+        assert.equal(statSync(done, { throwIfNoEntry: false })?.isFile(), true, "the child finished its cleanup");
+        unlinkSync(done);
+    });
+
+    void it("a job that finishes mid-run is held, then delivered once when the run ends", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, {});
         await h.handlers.get("agent_start")!({}, uiCtx);
         await h.tools.get("bash")!.execute("tc-43", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
         await sleep(400);
-        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1);
-        // pi cleared its queue (abort): the notice never arrived as a message, so settling re-sends it once.
+        const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+        assert.equal(notices(), 0, "held while the run is going");
         await h.handlers.get("agent_settled")!({}, uiCtx);
-        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 2);
-        await h.handlers.get("agent_settled")!({}, uiCtx);
-        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 2, "only once");
+        h.bg.deliverHeld(false);
+        h.bg.deliverHeld(false);
+        assert.equal(notices(), 1, "delivered once when the run ends");
     });
 });
 

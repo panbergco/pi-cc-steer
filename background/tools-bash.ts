@@ -16,8 +16,9 @@ import type {
     AgentToolResult,
     AgentToolUpdateCallback,
 } from "@earendil-works/pi-agent-core";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { delimiter, join } from "node:path";
 import { Type } from "typebox";
 import { statSync, unlinkSync } from "node:fs";
 import type { BgRegistry } from "./registry.ts";
@@ -31,6 +32,8 @@ import {
 import {
     LOG_DIR,
     DEFAULT_TIMEOUT_MS,
+    FOREGROUND_WATCH_INTERVAL_MS,
+    MAX_LOG_BYTES,
     OUTPUT_PREVIEW_CHARS,
     QUICK_COMPLETION_MS,
     type BackgroundReason,
@@ -76,6 +79,33 @@ type BashParams = {
     run_in_background?: boolean;
     description?: string;
 };
+
+/** The environment pi's own bash gives a command: pi's bin dir on PATH, and the session's PI_* variables. */
+function shellEnv(ctx: Partial<ExtensionContext>): NodeJS.ProcessEnv {
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    const pathKey = Object.keys(env).find((k) => k.toLowerCase() === "path") ?? "PATH";
+    const binDir = join(getAgentDir(), "bin");
+    const entries = (env[pathKey] ?? "").split(delimiter).filter(Boolean);
+    if (!entries.includes(binDir)) env[pathKey] = [binDir, ...entries].join(delimiter);
+    for (const k of ["PI_SESSION_ID", "PI_SESSION_FILE", "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL"]) delete env[k];
+    try {
+        const sm = ctx.sessionManager;
+        if (sm) {
+            env.PI_SESSION_ID = sm.getSessionId();
+            const file = sm.getSessionFile();
+            if (file) env.PI_SESSION_FILE = file;
+        }
+        if (ctx.model) {
+            env.PI_PROVIDER = ctx.model.provider;
+            env.PI_MODEL = ctx.model.id;
+        }
+        const level = (ctx as { thinkingLevel?: string }).thinkingLevel;
+        if (level) env.PI_REASONING_LEVEL = level;
+    } catch {
+        /* a partial context (tests, print mode) simply leaves them unset */
+    }
+    return env;
+}
 
 function textBlock(s: string): { type: "text"; text: string } {
     return { type: "text" as const, text: s };
@@ -177,7 +207,7 @@ async function runForeground(args: {
     // kill the very command we just backgrounded. We manage the signal
     // manually and only kill on a genuine cancel (abort with no pause
     // requested — e.g. Esc).
-    const spawned = spawnWithFileOutput({ command, cwd: ctx.cwd, logPath });
+    const spawned = spawnWithFileOutput({ command, cwd: ctx.cwd, logPath, env: shellEnv(ctx as never) });
 
     // Register the foreground slot so Ctrl+Shift+B can find this command.
     let pauseRequested = false;
@@ -188,9 +218,10 @@ async function runForeground(args: {
     });
     const requestPause = (reason: BackgroundReason) => {
         // Once cancelled the command is being stopped: it must not escape into the background.
-        if (signal?.aborted) return;
+        if (signal?.aborted) return false;
         pauseRequested = true;
         pauseResolve?.(reason);
+        return true;
     };
 
     // Esc / send-now: stop the whole process group at once, as pi's own bash does (SIGKILL), so a
@@ -239,10 +270,14 @@ async function runForeground(args: {
     let timedOut = false;
     let cappedOut = false;
     // A runaway foreground command is stopped too, not only background ones.
-    const stopCapWatch = watchOutputCap(job, () => {
-        cappedOut = true;
-        killProcessTree(spawned.pid, "SIGKILL");
-    });
+    const stopCapWatch = watchOutputCap(
+        job,
+        () => {
+            cappedOut = true;
+            killProcessTree(spawned.pid, "SIGKILL");
+        },
+        FOREGROUND_WATCH_INTERVAL_MS
+    );
 
     const cleanup = () => {
         progressPoller?.stop();
@@ -256,8 +291,10 @@ async function runForeground(args: {
     const finishForeground = (exit: SpawnExit): AgentToolResult<undefined> => {
         let output = readLogTail(job, OUTPUT_PREVIEW_CHARS);
         if (output === "(no output yet)") output = "";
-        // Longer than the preview: keep the whole log and say where it is, as pi's bash does.
-        if (logSize() > OUTPUT_PREVIEW_CHARS) {
+        // Longer than the preview: keep the whole log and say where it is, as pi's bash does. A log that
+        // blew the size cap is not kept: it is runaway output, and it would fill the temp dir.
+        const size = logSize();
+        if (size > OUTPUT_PREVIEW_CHARS && size <= MAX_LOG_BYTES && !cappedOut) {
             keepLog = true;
             output += `\n\n[Full output: ${logPath}]`;
         }
@@ -266,7 +303,7 @@ async function runForeground(args: {
         };
         // Cancelled (Esc, or a send-now): report it the way pi's own bash does.
         if (signal?.aborted) fail("Command aborted");
-        if (timedOut) fail(`Command timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+        if (timedOut) fail(`Command timed out after ${timeoutMs / 1000} seconds`);
         if (cappedOut) fail("Command stopped: output exceeded the size limit");
         // Killed from outside (another process, the OOM killer): a failure, not a success.
         if (exit.signal) fail(`Command terminated by ${exit.signal}`);
@@ -363,6 +400,7 @@ function spawnBackground(args: {
         command: args.command,
         cwd: args.cwd,
         logPath,
+        env: shellEnv(args.ctx as never),
     });
     // Background from birth: the job must not keep pi's event loop alive.
     spawned.proc.unref();

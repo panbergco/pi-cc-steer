@@ -41,6 +41,7 @@ export function spawnWithFileOutput(args: {
     command: string;
     cwd: string;
     logPath: string;
+    env?: NodeJS.ProcessEnv;
 }): SpawnResult {
     ensureLogDir(args.logPath);
     const outFd = openSync(args.logPath, "w");
@@ -51,7 +52,7 @@ export function spawnWithFileOutput(args: {
             stdio: ["ignore", outFd, outFd],
             cwd: args.cwd,
             detached: true,
-            env: { ...process.env },
+            env: args.env ?? { ...process.env },
         });
     } finally {
         closeSync(outFd);
@@ -140,12 +141,14 @@ export async function killWithGrace(args: {
         t.unref();
     });
 
+    const started = Date.now();
     const ok = await Promise.race([exited, graceExpired]);
     if (!ok && processExists(pid)) {
         killProcessTree(pid, "SIGKILL");
         return;
     }
-    // The shell exited, but a child that ignores SIGTERM may still hold the group: finish it off.
+    // The shell exited; its children get the rest of the grace window to finish, then any survivor is killed.
+    while (groupExists(pid) && Date.now() - started < graceMs) await new Promise((r) => setTimeout(r, 50));
     if (groupExists(pid)) killProcessTree(pid, "SIGKILL");
 }
 

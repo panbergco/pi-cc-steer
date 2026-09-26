@@ -21,8 +21,7 @@ import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
-import { sendNotice } from "./notify.ts";
-import { EVENT } from "./types.ts";
+import { deliverHeld } from "./notify.ts";
 import type { UiContext } from "./types.ts";
 
 /** What pi-cc-steer needs from the engine. */
@@ -31,6 +30,8 @@ export interface Background {
     hasForeground(): boolean;
     /** Move every foreground bash command to the background. */
     backgroundAll(ctx: UiContext): boolean;
+    /** The run ended: deliver finish notices held during it (see notify.ts deliverHeld). */
+    deliverHeld(withNextMessage: boolean): void;
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -51,20 +52,14 @@ export function registerBackground(pi: ExtensionAPI): Background {
     // ── Notice delivery ───────────────────────────────────────────
     pi.on("agent_start", () => {
         reg.agentRunning = true;
+        reg.runAborted = false;
     });
-    pi.on("message_end", (event) => {
-        const m = event.message as { role: string; customType?: string; details?: { jobId?: string } };
-        if (m.role === "custom" && m.customType === EVENT.taskNotification && m.details?.jobId) {
-            reg.undelivered.delete(m.details.jobId);
-        }
+    pi.on("turn_end", (event, ctx) => {
+        const stop = (event.message as { stopReason?: string }).stopReason;
+        if (stop === "aborted" || ctx.signal?.aborted) reg.runAborted = true;
     });
     pi.on("agent_settled", () => {
-        reg.agentRunning = false;
-        // Anything still unseen was cleared from pi's queue by an abort: send it again.
-        for (const [id, notice] of reg.undelivered) {
-            reg.undelivered.delete(id);
-            sendNotice(pi, notice);
-        }
+        reg.agentRunning = false; // pi-cc-steer then calls deliverHeld for what arrived during the run
     });
 
     // No input hook: a message typed while a command runs waits for it (Claude Code's default for bash);
@@ -99,5 +94,6 @@ export function registerBackground(pi: ExtensionAPI): Background {
     return {
         hasForeground: () => reg.foreground.size > 0,
         backgroundAll: (ctx) => backgroundActiveForeground(reg, ctx),
+        deliverHeld: (withNextMessage) => deliverHeld(reg, pi, withNextMessage),
     };
 }

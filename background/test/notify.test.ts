@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
     buildTaskNotification,
     completionSummary,
+    deliverHeld,
     escapeXml,
     markNotified,
     sendTaskNotification,
@@ -136,8 +137,42 @@ void describe("completionSummary", () => {
     });
 });
 
+void describe("notices that finish mid-run", () => {
+    void it("are held, not put in pi's queue, until the run ends", () => {
+        const { reg, pi, messages } = harness();
+        reg.agentRunning = true;
+        const job = mkJob({ id: "bash-held0001", logPath: "/nope.log" });
+        add(reg, job);
+        assert.equal(sendTaskNotification({ reg, pi: pi as never, job }), true);
+        assert.equal(messages.length, 0, "nothing handed to pi mid-run");
+        assert.equal(reg.held.length, 1);
+    });
+
+    void it("ride after the person's next message, or after an interruption wait for it", () => {
+        for (const [withNext, aborted] of [[true, false], [false, true]] as const) {
+            const { reg, pi, messages, deliverOptions } = harness();
+            reg.held = [{ content: "a", details: {} }, { content: "b", details: {} }];
+            reg.runAborted = aborted;
+            deliverHeld(reg, pi as never, withNext);
+            assert.equal(messages.length, 2);
+            assert.deepEqual(deliverOptions, [{ deliverAs: "nextTurn" }, { deliverAs: "nextTurn" }]);
+            assert.equal(reg.held.length, 0);
+        }
+    });
+
+    void it("otherwise start one turn, with every held notice in it", () => {
+        const { reg, pi, messages, deliverOptions } = harness();
+        reg.held = [{ content: "a", details: {} }, { content: "b", details: {} }, { content: "c", details: {} }];
+        deliverHeld(reg, pi as never, false);
+        assert.equal(messages.length, 3);
+        assert.deepEqual(deliverOptions, [{}, {}, { triggerTurn: true }], "only the last one starts a turn");
+        deliverHeld(reg, pi as never, false);
+        assert.equal(messages.length, 3, "delivered once");
+    });
+});
+
 void describe("sendTaskNotification — exactly-once", () => {
-    void it("sends as a follow-up that wakes an idle agent, and evicts the job", () => {
+    void it("wakes an idle agent, and evicts the job", () => {
         const { reg, pi, messages, deliverOptions } = harness();
         const job = mkJob({ id: "bash-send0001", logPath: "/nope.log" });
         add(reg, job);
@@ -148,7 +183,7 @@ void describe("sendTaskNotification — exactly-once", () => {
         assert.equal(messages.length, 1);
         assert.equal(messages[0].customType, EVENT.taskNotification);
         assert.equal(messages[0].display, true);
-        assert.deepEqual(deliverOptions[0], { deliverAs: "followUp", triggerTurn: true });
+        assert.deepEqual(deliverOptions[0], { triggerTurn: true });
         assert.equal(messages[0].details?.status, "completed");
         assert.equal(reg.jobs.has("bash-send0001"), false, "terminal+notified evicted");
         assert.equal(reg.recentTerminal.length, 1);

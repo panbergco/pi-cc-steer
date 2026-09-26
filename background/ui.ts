@@ -97,9 +97,11 @@ export function backgroundActiveForeground(reg: BgRegistry, ctx: UiContext): boo
         ctx.ui.notify("No running foreground process to background.", "warning");
         return false;
     }
+    let paused = 0;
     for (const slot of reg.foreground.values()) {
-        slot.requestPause("manual");
+        if (slot.requestPause("manual")) paused++;
     }
+    if (paused === 0) return false; // being cancelled: let the key do its normal job
     reg.foreground.clear();
     ctx.ui.notify("▶ Backgrounded — continuing.", "info");
     return true;

@@ -204,7 +204,7 @@ export function terminateJobSilently(reg: BgRegistry, job: BgJob, reason?: strin
  * A command that out-produces the cap is killed (through the shared
  * SIGTERM→grace→SIGKILL path) so it can't fill the disk.
  */
-export function watchOutputCap(job: BgJob, onTrip: () => void): () => void {
+export function watchOutputCap(job: BgJob, onTrip: () => void, intervalMs = OUTPUT_WATCH_INTERVAL_MS): () => void {
     let tripped = false;
     const timer = setInterval(() => {
         if (tripped) return;
@@ -224,7 +224,7 @@ export function watchOutputCap(job: BgJob, onTrip: () => void): () => void {
             );
         } catch { /* best-effort — the kill below still happens */ }
         onTrip();
-    }, OUTPUT_WATCH_INTERVAL_MS);
+    }, intervalMs);
     timer.unref();
     return () => clearInterval(timer);
 }

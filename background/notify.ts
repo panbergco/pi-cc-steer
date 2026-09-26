@@ -7,9 +7,9 @@
  *
  * Every backgrounded job that reaches a terminal state sends its OWN
  * <task-notification> XML message, exactly once, the moment it exits. While the
- * agent is running it waits as a follow-up (after the run, never ahead of the
- * person's own queued messages); when idle it starts a turn (triggerTurn: true).
- * A notice an abort clears from pi's queue is re-sent at agent_settled.
+ * agent is running it is held until the run ends, then rides in the person's
+ * next message (after it) or, when nothing else follows, starts a turn itself;
+ * when idle it starts a turn at once.
  *
  * Exactly-once is enforced by the job's `notified` latch — a check-and-set
  * done BEFORE the send, so any path that already surfaced the outcome (a
@@ -126,8 +126,13 @@ export function sendTaskNotification(args: {
         content: buildTaskNotification({ job, status, summary }),
         details: { jobId: job.id, status, summary, outputFile: job.logPath },
     };
-    // Queued behind a running turn, a notice can be wiped out by an abort; remember it until it arrives.
-    if (reg.agentRunning) reg.undelivered.set(job.id, notice);
+    // Mid-run: hold it here until the run ends (see deliverHeld), so it never takes the place of a message
+    // the person queued and an abort cannot wipe it out.
+    if (reg.agentRunning) {
+        reg.held.push(notice);
+        forget(reg, job);
+        return true;
+    }
     try {
         sendNotice(pi, notice);
     } catch (err) {
@@ -138,13 +143,30 @@ export function sendTaskNotification(args: {
     return true;
 }
 
-/** Hand a notice to pi. */
+/** Hand a notice to pi, waking an idle agent. */
 export function sendNotice(
     pi: Pick<ExtensionAPI, "sendMessage">,
-    notice: { content: string; details: unknown }
+    notice: { content: string; details: unknown },
+    options: { deliverAs?: "nextTurn"; triggerTurn?: boolean } = DELIVER_NOTICE
 ): void {
     pi.sendMessage(
         { customType: EVENT.taskNotification, content: notice.content, display: true, details: notice.details },
-        DELIVER_NOTICE
+        options
     );
+}
+
+/**
+ * The run has ended: deliver the notices held during it. When a message from the person is about to start
+ * the next run, or the run was interrupted, they ride in that next message, after it (Claude Code puts the
+ * person's message first). Otherwise the last one starts a turn and the others go in just before it.
+ */
+export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, withNextMessage: boolean): void {
+    const held = reg.held;
+    reg.held = [];
+    if (held.length === 0) return;
+    if (withNextMessage || reg.runAborted) {
+        for (const n of held) sendNotice(pi, n, { deliverAs: "nextTurn" });
+        return;
+    }
+    held.forEach((n, i) => sendNotice(pi, n, i === held.length - 1 ? DELIVER_NOTICE : {}));
 }

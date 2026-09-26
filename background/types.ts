@@ -24,6 +24,8 @@ export const NOTIFY_TAIL_CHARS = 1_000;
 export const MAX_LOG_BYTES = 64 * 1024 * 1024;
 /** How often the output-cap watcher stats the log file. */
 export const OUTPUT_WATCH_INTERVAL_MS = 2_000;
+/** A foreground command is watched more often: nothing else bounds how fast it fills the temp dir. */
+export const FOREGROUND_WATCH_INTERVAL_MS = 250;
 /** Grace window between SIGTERM and SIGKILL on every stop path. */
 export const SIGTERM_GRACE_MS = 5_000;
 export const RECENT_TERMINAL_KEEP = 20;
@@ -83,7 +85,8 @@ export type BackgroundReason = "manual" | "timeout";
  *  toolCallId in the registry. Ctrl+B / Ctrl+Shift+B and the timeout timer call
  *  requestPause to flip the command into the background. */
 export interface ForegroundSlot {
-    requestPause: (reason: BackgroundReason) => void;
+    /** Returns false when the command can no longer be backgrounded (it is being cancelled). */
+    requestPause: (reason: BackgroundReason) => boolean;
 }
 
 // --- Event types ---
@@ -92,9 +95,9 @@ export const EVENT = {
 } as const;
 
 // --- Deliver options ---
-/** A completion notice waits for the current run to finish (Claude Code's 'later' priority), so it never
- *  takes the place of a message the person queued; when pi is idle it starts a turn. */
-export const DELIVER_NOTICE = { deliverAs: "followUp", triggerTurn: true } as const;
+/** An idle agent is woken by a completion notice. A notice that finishes mid-run is held by the extension
+ *  (never in pi's own queue, which an abort clears) and delivered when the run ends — see deliverHeld. */
+export const DELIVER_NOTICE = { triggerTurn: true } as const;
 
 // --- UI context ---
 /** The slice of pi's ExtensionContext the UI helpers need. */

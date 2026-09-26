@@ -38,10 +38,12 @@ export class BgRegistry {
 
     nonInteractive = false;
 
-    /** pi is running a turn (between agent_start and agent_settled). */
+    /** pi is running (between agent_start and agent_settled). */
     agentRunning = false;
-    /** Notices handed to pi mid-run and not yet seen arriving: an abort clears pi's queue, so these are re-sent. */
-    undelivered = new Map<string, { content: string; details: unknown }>();
+    /** The current run was interrupted (Esc, send-now, another extension). */
+    runAborted = false;
+    /** Completion notices that arrived mid-run, waiting for the run to end (Claude Code's 'later' priority). */
+    held: { content: string; details: unknown }[] = [];
 }
 
 // --- ID generation -------------------------------------------------------

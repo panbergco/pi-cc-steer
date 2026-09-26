@@ -139,7 +139,11 @@ export default function (pi: ExtensionAPI) {
 		// An undelivered steer went back to pi's own queue when the run ended: drop its record so it cannot claim a
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
 		pending = pending.filter((p) => p.how === "prompt");
-		if (queue.length === 0 || !ctx.isIdle()) return render(ctx);
+		const sending = queue.length > 0 && ctx.isIdle();
+		// Finish notices that arrived during the run: they ride in the next message when one is coming (after it,
+		// as in Claude Code), and wait for the person after an interruption; otherwise one starts a turn.
+		background?.deliverHeld(sending || interrupted || !ctx.isIdle());
+		if (!sending) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});
 		flush(ctx, "prompt", interrupted ? "interrupt" : undefined);
