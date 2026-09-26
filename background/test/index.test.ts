@@ -8,6 +8,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
+import { statSync, unlinkSync } from "node:fs";
 import { registerBackground } from "../index.ts";
 import { EVENT } from "../types.ts";
 
@@ -209,6 +210,93 @@ void describe("typing while a command runs", () => {
     void it("registers no input hook: the message waits and the command keeps running (Claude Code's default)", () => {
         const h = startExtension();
         assert.equal(h.handlers.has("input"), false);
+    });
+});
+
+void describe("cancelling and failures (regressions)", () => {
+    void it("Esc stops a command that ignores SIGTERM, and it cannot then be backgrounded", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        const ac = new AbortController();
+        const pending = h.tools.get("bash")!.execute(
+            "tc-40",
+            { command: `trap '' TERM; while :; do sleep 1; done # ${MARKER}-trap` },
+            ac.signal,
+            undefined,
+            uiCtx
+        );
+        await sleep(2_500);
+        ac.abort();
+        await h.shortcuts.get("ctrl+shift+b")!(uiCtx); // too late: the command is being stopped
+        await assert.rejects(pending, /Command aborted/);
+        await sleep(300);
+        assert.equal(liveMarkedProcesses(), 0);
+        assert.equal(
+            execSync(`pgrep -f "[t]rap '' TERM; while :; do sleep 1; done # ${MARKER}-trap" | wc -l`, { encoding: "utf-8" }).trim(),
+            "0"
+        );
+    });
+
+    void it("a command killed from outside is a failure, not a success", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        await assert.rejects(
+            h.tools.get("bash")!.execute("tc-41", { command: "kill -KILL $$" }, undefined, undefined, uiCtx),
+            /terminated by SIGKILL/
+        );
+    });
+
+    void it("long output keeps the full log and names it", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        const res = await h.tools.get("bash")!.execute(
+            "tc-42",
+            { command: "head -c 20000 /dev/zero | tr '\\0' x" },
+            undefined,
+            undefined,
+            uiCtx
+        );
+        const path = /\[Full output: (\S+)\]/.exec(res.content[0].text)?.[1];
+        assert.ok(path, `full-output path in result, got tail: ${res.content[0].text.slice(-120)}`);
+        assert.equal(statSync(path).size, 20000);
+        unlinkSync(path);
+    });
+
+    void it("in print mode an explicit timeout stops the command, as pi's bash does", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {}); // tests run without a TTY: non-interactive
+        await assert.rejects(
+            h.tools.get("bash")!.execute("tc-44", { command: "sleep 10", timeout: 1 }, undefined, undefined, uiCtx),
+            /timed out after 1 seconds/
+        );
+    });
+
+    void it("ending the session also stops a child that ignores SIGTERM", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        const cmd = `bash -c "trap '' TERM; while :; do sleep 1; done # ${MARKER}-child" & wait`;
+        await h.tools.get("bash")!.execute("tc-45", { command: cmd, run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(500);
+        const count = () =>
+            execSync(`pgrep -f "[t]rap '' TERM; while :; do sleep 1; done # ${MARKER}-child" | wc -l`, { encoding: "utf-8" }).trim();
+        assert.notEqual(count(), "0", "child is running");
+        await h.handlers.get("session_shutdown")!({ reason: "reload" }, {});
+        await sleep(300);
+        assert.equal(count(), "0", "no survivor after shutdown");
+    });
+
+    void it("a notice cleared by an abort is sent again once pi settles", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, {});
+        await h.handlers.get("agent_start")!({}, uiCtx);
+        await h.tools.get("bash")!.execute("tc-43", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(400);
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1);
+        // pi cleared its queue (abort): the notice never arrived as a message, so settling re-sends it once.
+        await h.handlers.get("agent_settled")!({}, uiCtx);
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 2);
+        await h.handlers.get("agent_settled")!({}, uiCtx);
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 2, "only once");
     });
 });
 

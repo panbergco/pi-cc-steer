@@ -21,6 +21,8 @@ import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
+import { sendNotice } from "./notify.ts";
+import { EVENT } from "./types.ts";
 import type { UiContext } from "./types.ts";
 
 /** What pi-cc-steer needs from the engine. */
@@ -45,6 +47,25 @@ export function registerBackground(pi: ExtensionAPI): Background {
 
     // ── Commands / shortcut / message renderer ────────────────────
     registerUi(pi, reg);
+
+    // ── Notice delivery ───────────────────────────────────────────
+    pi.on("agent_start", () => {
+        reg.agentRunning = true;
+    });
+    pi.on("message_end", (event) => {
+        const m = event.message as { role: string; customType?: string; details?: { jobId?: string } };
+        if (m.role === "custom" && m.customType === EVENT.taskNotification && m.details?.jobId) {
+            reg.undelivered.delete(m.details.jobId);
+        }
+    });
+    pi.on("agent_settled", () => {
+        reg.agentRunning = false;
+        // Anything still unseen was cleared from pi's queue by an abort: send it again.
+        for (const [id, notice] of reg.undelivered) {
+            reg.undelivered.delete(id);
+            sendNotice(pi, notice);
+        }
+    });
 
     // No input hook: a message typed while a command runs waits for it (Claude Code's default for bash);
     // pi-cc-steer queues it, and Ctrl+B or send-now are how the person moves on sooner.

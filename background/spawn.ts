@@ -143,6 +143,19 @@ export async function killWithGrace(args: {
     const ok = await Promise.race([exited, graceExpired]);
     if (!ok && processExists(pid)) {
         killProcessTree(pid, "SIGKILL");
+        return;
+    }
+    // The shell exited, but a child that ignores SIGTERM may still hold the group: finish it off.
+    if (groupExists(pid)) killProcessTree(pid, "SIGKILL");
+}
+
+/** Whether any process in the group led by pid is still alive. */
+function groupExists(pid: number): boolean {
+    try {
+        process.kill(-pid, 0);
+        return true;
+    } catch (err) {
+        return (err as NodeJS.ErrnoException).code === "EPERM";
     }
 }
 

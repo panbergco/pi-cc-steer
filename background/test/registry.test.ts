@@ -11,7 +11,7 @@ import {
     newJobId,
     sweepNotifiedTerminal,
 } from "../registry.ts";
-import { MAX_CONCURRENT_JOBS, RECENT_TERMINAL_KEEP, type BgJob } from "../types.ts";
+import { LOG_DIR, MAX_CONCURRENT_JOBS, RECENT_TERMINAL_KEEP, type BgJob } from "../types.ts";
 
 function mkJob(over: Partial<BgJob> = {}): BgJob {
     return {
@@ -47,7 +47,7 @@ void describe("newJobId", () => {
 
 void describe("logPathFor", () => {
     void it("puts logs in the dedicated dir", () => {
-        assert.equal(logPathFor("bash-abcd1234"), "/tmp/pi-bg-tasks/bash-abcd1234.log");
+        assert.equal(logPathFor("bash-abcd1234"), `${LOG_DIR}/bash-abcd1234.log`);
     });
 });
 

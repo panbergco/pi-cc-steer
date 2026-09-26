@@ -92,10 +92,9 @@ export const EVENT = {
 } as const;
 
 // --- Deliver options ---
-/** Steer the message into the current/next turn AND wake the agent: pi queues
- *  it while the agent is streaming and delivers it at the next tool-call
- *  boundary, or starts a fresh turn when idle. */
-export const DELIVER_STEER = { deliverAs: "steer", triggerTurn: true } as const;
+/** A completion notice waits for the current run to finish (Claude Code's 'later' priority), so it never
+ *  takes the place of a message the person queued; when pi is idle it starts a turn. */
+export const DELIVER_NOTICE = { deliverAs: "followUp", triggerTurn: true } as const;
 
 // --- UI context ---
 /** The slice of pi's ExtensionContext the UI helpers need. */

@@ -107,19 +107,21 @@ Modelled on Claude Code's background bash:
 | A command is still running after 2 s | A hint appears under the editor: `(ctrl+b to run in background)` (`ctrl+b ctrl+b` inside tmux, where Ctrl+B is the prefix). |
 | **Ctrl+B** (or Ctrl+Shift+B, or `/bg`) while it runs | The command keeps running with its output going to a log file. The model is told it was backgrounded and carries on; messages you queued go in at that point. With nothing running, Ctrl+B is still cursor-left. |
 | The command reaches its timeout (120 s by default) | It moves to the background instead of being killed. |
-| A background command finishes | The model gets one notice with its status, exit code, output tail and log path — at the next tool boundary, or as a new turn if pi is idle. |
-| Esc, or a send-now, while a command runs in the foreground | The command is stopped, as in Claude Code. |
+| A background command finishes | The model gets one notice with its status, exit code, output tail and log path — after the current run (never ahead of messages you queued), or as a new turn if pi is idle. A notice lost to an interruption is sent again. |
+| Esc, or a send-now, while a command runs in the foreground | The command and everything it started are stopped at once, as pi's own bash does. |
 | You type a message while a command runs | It waits for the command, as in Claude Code; press Ctrl+B to move on sooner. |
 
 The model gets `run_in_background` on `bash` for commands it knows are long, plus `bg_list`, `bg_output` and `bg_stop`.
 The status bar counts running, finished and failed background commands (`▶ 1 · ✓ 2`); `/bg-tasks` lists them.
-Background commands are stopped when the session ends. Logs go to `pi-bg-tasks/` in the system temp directory
-(`TMPDIR`), and a command whose log passes 64 MiB is stopped.
+Background commands, and anything they started, are stopped when the session ends. Logs go to `pi-bg-tasks/` in the
+system temp directory (`TMPDIR`); a command whose log passes 64 MiB is stopped, and a foreground result longer than
+12,000 characters names the log that keeps the full output.
 
 The engine is adapted from [pi-bg-tasks](https://github.com/cyzlmh/pi-extensions/tree/main/pi-bg-tasks) (MIT, © cyzlmh),
 itself a fork of [pi-patty-bg-tasks](https://github.com/patty-io/pi-patty-bg-tasks) (MIT, © patty.io). Changes: Ctrl+B
-through pi-cc-steer's editor, typing no longer backgrounds a command, logs follow `TMPDIR`, an interrupted command reads
-as pi's own does, and the macOS sandbox display helper is dropped.
+through pi-cc-steer's editor, typing no longer backgrounds a command, logs follow `TMPDIR`, an interrupted, timed-out or externally
+killed command reads as pi's own does, cancelling kills stubborn commands, notices queue behind your messages and
+survive an interruption, the log cap covers foreground commands, and the macOS sandbox display helper is dropped.
 
 ## Compared with Claude Code
 
@@ -183,6 +185,8 @@ The small differences that remain:
 - **Background commands, not yet like Claude Code:** no warning when a background command sits waiting on an
   interactive prompt (Claude Code notices after 45 s), `sleep` is not treated specially, the log cap is 64 MiB
   (Claude Code: 5 GB), and there is no interactive task manager — `/bg-tasks` prints a list.
+- **Shell settings.** Commands run as `bash -c` with pi's environment: pi's `shellPath` and `shellCommandPrefix`
+  settings are not applied, unlike pi's own bash. Start pi with `PI_CC_STEER_BACKGROUND=0` if you rely on them.
 - **Other bash replacements.** Extensions that also replace pi's `bash` tool (for example pi-bg-tasks,
   pi-patty-bg-tasks, pi-background-bash) conflict with this one: use one, or start pi with
   `PI_CC_STEER_BACKGROUND=0`.

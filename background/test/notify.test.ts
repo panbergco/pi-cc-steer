@@ -137,7 +137,7 @@ void describe("completionSummary", () => {
 });
 
 void describe("sendTaskNotification — exactly-once", () => {
-    void it("sends with steer delivery + triggerTurn and evicts the job", () => {
+    void it("sends as a follow-up that wakes an idle agent, and evicts the job", () => {
         const { reg, pi, messages, deliverOptions } = harness();
         const job = mkJob({ id: "bash-send0001", logPath: "/nope.log" });
         add(reg, job);
@@ -148,7 +148,7 @@ void describe("sendTaskNotification — exactly-once", () => {
         assert.equal(messages.length, 1);
         assert.equal(messages[0].customType, EVENT.taskNotification);
         assert.equal(messages[0].display, true);
-        assert.deepEqual(deliverOptions[0], { deliverAs: "steer", triggerTurn: true });
+        assert.deepEqual(deliverOptions[0], { deliverAs: "followUp", triggerTurn: true });
         assert.equal(messages[0].details?.status, "completed");
         assert.equal(reg.jobs.has("bash-send0001"), false, "terminal+notified evicted");
         assert.equal(reg.recentTerminal.length, 1);

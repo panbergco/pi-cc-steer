@@ -37,6 +37,11 @@ export class BgRegistry {
     totalStarted = 0;
 
     nonInteractive = false;
+
+    /** pi is running a turn (between agent_start and agent_settled). */
+    agentRunning = false;
+    /** Notices handed to pi mid-run and not yet seen arriving: an abort clears pi's queue, so these are re-sent. */
+    undelivered = new Map<string, { content: string; details: unknown }>();
 }
 
 // --- ID generation -------------------------------------------------------

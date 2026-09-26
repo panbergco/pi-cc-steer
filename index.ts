@@ -154,11 +154,11 @@ export default function (pi: ExtensionAPI) {
 			const handleInput = editor.handleInput.bind(editor);
 			editor.handleInput = (data: string) => {
 				const e = editor as typeof editor & { isShowingAutocomplete?: () => boolean; getCursor?: () => { line: number } };
-				if (e.isShowingAutocomplete?.()) return handleInput(data);
-				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				// Ctrl+B while a command runs moves it to the background, as in Claude Code; otherwise it is pi's
 				// cursor-left. Queued messages then go in at the tool boundary that this creates.
 				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
+				if (e.isShowingAutocomplete?.()) return handleInput(data);
+				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
 					// Esc with messages waiting sends them now, as in Claude Code (a bare Esc still just interrupts).
 					if (keybindings.matches(data, "app.interrupt") && sendNowFromEditor(ctx)) return;

@@ -19,7 +19,7 @@ import type {
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { unlinkSync } from "node:fs";
+import { statSync, unlinkSync } from "node:fs";
 import type { BgRegistry } from "./registry.ts";
 import {
     add,
@@ -47,6 +47,7 @@ import {
     promoteToBackground,
     requireExistingCwd,
     startBackgroundJob,
+    watchOutputCap,
 } from "./lifecycle.ts";
 
 /** UI context + cwd is all this tool needs from the host context. */
@@ -140,6 +141,7 @@ export function registerBashTool(
                 command: p.command,
                 displayCommand,
                 timeoutMs: p.timeout ? p.timeout * 1000 : DEFAULT_TIMEOUT_MS,
+                explicitTimeout: Boolean(p.timeout),
                 signal,
                 onUpdate,
                 ctx: bashCtx,
@@ -157,13 +159,15 @@ async function runForeground(args: {
     command: string;
     displayCommand?: string;
     timeoutMs: number;
+    /** The model set the timeout itself (in print mode that means: kill at the timeout, as pi's bash does). */
+    explicitTimeout?: boolean;
     signal: AbortSignal | undefined;
     onUpdate: AgentToolUpdateCallback<undefined> | undefined;
     ctx: BashCtx;
     reg: BgRegistry;
     pi: Pick<ExtensionAPI, "sendMessage">;
 }): Promise<AgentToolResult<undefined>> {
-    const { toolCallId, command, displayCommand, timeoutMs, signal, onUpdate, ctx, reg, pi } = args;
+    const { toolCallId, command, displayCommand, timeoutMs, explicitTimeout, signal, onUpdate, ctx, reg, pi } = args;
     const id = newJobId(reg);
     const logPath = logPathFor(id);
 
@@ -183,12 +187,16 @@ async function runForeground(args: {
         pauseResolve = r;
     });
     const requestPause = (reason: BackgroundReason) => {
+        // Once cancelled the command is being stopped: it must not escape into the background.
+        if (signal?.aborted) return;
         pauseRequested = true;
         pauseResolve?.(reason);
     };
 
+    // Esc / send-now: stop the whole process group at once, as pi's own bash does (SIGKILL), so a
+    // command that ignores SIGTERM cannot keep the run from ending.
     const onTurnAbort = () => {
-        if (!pauseRequested) killProcessTree(spawned.pid, "SIGTERM");
+        if (!pauseRequested) killProcessTree(spawned.pid, "SIGKILL");
     };
     if (signal) {
         if (signal.aborted) onTurnAbort();
@@ -213,7 +221,14 @@ async function runForeground(args: {
     // Timeout timer — promote to background; in print/non-TTY mode there is
     // no one to background FOR, so the command simply runs to completion.
     const timeoutTimer = setTimeout(() => {
-        if (reg.nonInteractive) return;
+        if (reg.nonInteractive) {
+            // Nobody to background for: honour an explicit timeout the way pi's bash does.
+            if (explicitTimeout) {
+                timedOut = true;
+                killProcessTree(spawned.pid, "SIGKILL");
+            }
+            return;
+        }
         if (!reg.foreground.has(toolCallId)) return;
         requestPause("timeout");
     }, timeoutMs);
@@ -221,25 +236,50 @@ async function runForeground(args: {
 
     let progressPoller: { stop: () => void } | undefined;
     let hintShown = false;
+    let timedOut = false;
+    let cappedOut = false;
+    // A runaway foreground command is stopped too, not only background ones.
+    const stopCapWatch = watchOutputCap(job, () => {
+        cappedOut = true;
+        killProcessTree(spawned.pid, "SIGKILL");
+    });
 
     const cleanup = () => {
         progressPoller?.stop();
         clearTimeout(timeoutTimer);
         if (signal) signal.removeEventListener("abort", onTurnAbort);
+        stopCapWatch();
     };
 
     // Foreground completion (quick or normal): read output, surface errors.
     // Registry teardown happens in `finally` so no exit path can strand the job.
     const finishForeground = (exit: SpawnExit): AgentToolResult<undefined> => {
-        const output = readLogTail(job, OUTPUT_PREVIEW_CHARS);
-        // Cancelled (Esc, or a send-now): report it the way pi's own bash does, so the
-        // interruption reads the same as without this extension.
-        if (signal?.aborted) throw new Error(`${output === "(no output yet)" ? "" : output}\n\nCommand aborted`.trimStart());
-        // Any other signal death is a deliberate kill, not a command failure — never an error result.
-        if (exit.signal === null && exit.code !== 0) {
-            throw new Error(output || `Command exited with code ${exit.code ?? 1}`);
+        let output = readLogTail(job, OUTPUT_PREVIEW_CHARS);
+        if (output === "(no output yet)") output = "";
+        // Longer than the preview: keep the whole log and say where it is, as pi's bash does.
+        if (logSize() > OUTPUT_PREVIEW_CHARS) {
+            keepLog = true;
+            output += `\n\n[Full output: ${logPath}]`;
         }
+        const fail = (status: string) => {
+            throw new Error(`${output}\n\n${status}`.trimStart());
+        };
+        // Cancelled (Esc, or a send-now): report it the way pi's own bash does.
+        if (signal?.aborted) fail("Command aborted");
+        if (timedOut) fail(`Command timed out after ${Math.round(timeoutMs / 1000)} seconds`);
+        if (cappedOut) fail("Command stopped: output exceeded the size limit");
+        // Killed from outside (another process, the OOM killer): a failure, not a success.
+        if (exit.signal) fail(`Command terminated by ${exit.signal}`);
+        if (exit.code !== 0) fail(`Command exited with code ${exit.code ?? 1}`);
         return { content: [textBlock(output || "(no output)")], details: undefined };
+    };
+    let keepLog = false;
+    const logSize = () => {
+        try {
+            return statSync(logPath).size;
+        } catch {
+            return 0;
+        }
     };
 
     try {
@@ -299,7 +339,7 @@ async function runForeground(args: {
         reg.foreground.delete(toolCallId);
         if (!handedToBackground) {
             reg.jobs.delete(id);
-            try { unlinkSync(logPath); } catch { /* best-effort */ }
+            if (!keepLog) try { unlinkSync(logPath); } catch { /* best-effort */ }
         }
     }
 }

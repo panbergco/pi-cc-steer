@@ -6,10 +6,10 @@
  * Task-completion notifications.
  *
  * Every backgrounded job that reaches a terminal state sends its OWN
- * <task-notification> XML message, exactly once, the moment it exits. pi's
- * steer delivery queues the message while the agent is streaming and
- * delivers it at the next tool-call boundary, or starts a turn when the
- * agent is idle (triggerTurn: true).
+ * <task-notification> XML message, exactly once, the moment it exits. While the
+ * agent is running it waits as a follow-up (after the run, never ahead of the
+ * person's own queued messages); when idle it starts a turn (triggerTurn: true).
+ * A notice an abort clears from pi's queue is re-sent at agent_settled.
  *
  * Exactly-once is enforced by the job's `notified` latch — a check-and-set
  * done BEFORE the send, so any path that already surfaced the outcome (a
@@ -20,7 +20,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-    DELIVER_STEER,
+    DELIVER_NOTICE,
     EVENT,
     NOTIFY_TAIL_CHARS,
     type BgJob,
@@ -122,25 +122,29 @@ export function sendTaskNotification(args: {
     const status = job.status as TerminalStatus;
     const summary = completionSummary(job, status);
 
+    const notice = {
+        content: buildTaskNotification({ job, status, summary }),
+        details: { jobId: job.id, status, summary, outputFile: job.logPath },
+    };
+    // Queued behind a running turn, a notice can be wiped out by an abort; remember it until it arrives.
+    if (reg.agentRunning) reg.undelivered.set(job.id, notice);
     try {
-        pi.sendMessage(
-            {
-                customType: EVENT.taskNotification,
-                content: buildTaskNotification({ job, status, summary }),
-                display: true,
-                details: {
-                    jobId: job.id,
-                    status,
-                    summary,
-                    outputFile: job.logPath,
-                },
-            },
-            DELIVER_STEER
-        );
+        sendNotice(pi, notice);
     } catch (err) {
         console.error("[bg-tasks] task notification failed:", err);
         return false;
     }
     forget(reg, job);
     return true;
+}
+
+/** Hand a notice to pi. */
+export function sendNotice(
+    pi: Pick<ExtensionAPI, "sendMessage">,
+    notice: { content: string; details: unknown }
+): void {
+    pi.sendMessage(
+        { customType: EVENT.taskNotification, content: notice.content, display: true, details: notice.details },
+        DELIVER_NOTICE
+    );
 }
