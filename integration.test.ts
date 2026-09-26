@@ -312,6 +312,9 @@ test("a batch another extension rewrote on its way in: the notice never goes ahe
 		"tui",
 		[rewrite],
 	);
+	const { SUBMISSION_EXPIRY } = await import("./background/types.ts");
+	const saved = { ...SUBMISSION_EXPIRY };
+	SUBMISSION_EXPIRY.otherMs = 2_500; // how long an unrecognised batch holds notices back (60 s in use)
 	const run = s.session.prompt("go");
 	await sleep(600);
 	await s.session.prompt("PERSON", { streamingBehavior: "steer" });
@@ -320,7 +323,8 @@ test("a batch another extension rewrote on its way in: the notice never goes ahe
 	assert.equal(s.contexts.length, 5, "no notice-only turn after the run");
 	assert.equal(s.noticesIn(s.contexts.at(-1)), 0, "held back rather than risk going ahead of the rewritten batch");
 	await s.session.prompt("next");
-	await sleep(300); // the unrecognised batch no longer counts after that run: the notice gets its turn
+	await sleep(2_500); // the unrecognised batch expires: the notice gets its turn
+	Object.assign(SUBMISSION_EXPIRY, saved);
 	const last = s.contexts.at(-1)!;
 	assert.equal(s.noticesIn(last), 1, "delivered once it cannot be ahead of the batch");
 	assert.ok(last.findIndex((m) => text(m).includes("PERSON")) < last.findIndex((m) => text(m).includes("<task-notification>")));

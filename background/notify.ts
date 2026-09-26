@@ -128,13 +128,14 @@ function makeNotice(reg: BgRegistry, content: string, details: Notice["details"]
  *   person's own queued messages (deliverMidRun), or once the run ends (deliverHeld).
  */
 export function deliverNotice(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notice: Notice): void {
-    if (reg.ending || !reg.isIdle()) {
+    if (reg.ending || reg.inRun || !reg.isIdle()) {
         reg.held.push(notice);
-        watchHeld(reg, pi);
+        if (!reg.inRun) watchIdle(reg, pi); // busy without a run (compaction, /tree): no run end hands it on
         return;
     }
-    if (!reg.startsTurns || reg.submitting || reg.personPending()) {
-        reg.waiting.push(notice); // the next prompt carries it
+    if (!reg.startsTurns || reg.submitting || reg.personPending() || Date.now() < reg.quietUntil) {
+        reg.waiting.push(notice); // the next prompt carries it, or the watcher starts its turn
+        watchIdle(reg, pi);
         return;
     }
     startTurnWith(reg, pi, [notice]);
@@ -257,45 +258,42 @@ export function idsOf(details: { noticeId?: string; noticeIds?: string[] } | und
  */
 export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, withNextMessage: boolean): void {
     reg.ending = false;
+    reg.inRun = false; // pi has settled: the run is over
     reg.waiting.push(...reg.held.splice(0), ...reg.inFlight.values());
     reg.inFlight.clear();
-    if (withNextMessage) return;
-    scheduleTurn(reg, pi);
+    // A prompt about to start carries them (before_agent_start); the watcher starts their turn only if none does.
+    void withNextMessage;
+    watchIdle(reg, pi);
 }
 
 /**
- * Notices held while pi is busy outside a run (compacting, summarising a branch for /tree, …): no run ends to hand
- * them on, so check until pi is idle, then start their turn. A run that starts meanwhile takes over.
+ * Notices wait outside a run — after one ended, while pi is busy without one (compacting, summarising a branch for
+ * /tree), or while something of the person's is on its way. Check until they may start their turn: pi idle, nothing
+ * of the person's on its way, no prompt or /tree navigation under way. A run that starts takes them over instead
+ * (tool boundaries, or the prompt carries them). First check just after the current event, then every 250 ms.
  */
-export function watchHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
-    if (reg.heldWatch || reg.inRun || reg.ending) return;
+export function watchIdle(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
+    if (!reg.startsTurns) return;
+    if (reg.idleWatch) clearInterval(reg.idleWatch); // restart: check at once, something may have changed
     const stop = () => {
-        if (reg.heldWatch) clearInterval(reg.heldWatch);
-        reg.heldWatch = undefined;
+        if (reg.idleWatch) clearInterval(reg.idleWatch);
+        reg.idleWatch = undefined;
     };
-    reg.heldWatch = setInterval(() => {
-        if (reg.closed || reg.inRun || reg.ending || reg.held.length === 0) return stop();
-        if (!reg.isIdle()) return;
-        stop();
-        reg.waiting.push(...reg.held.splice(0));
-        scheduleTurn(reg, pi);
-    }, 250);
-    reg.heldWatch.unref?.();
-}
-
-/** pi is (about to be) idle with notices waiting: start one turn for them once this event has finished. */
-export function scheduleTurn(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
-    if (reg.waiting.length === 0 || !reg.startsTurns) return;
-    const generation = reg.generation;
-    setTimeout(() => {
+    const check = () => {
         try {
-            if (reg.closed || reg.submitting || reg.personPending() || reg.generation !== generation || !reg.isIdle()) return;
-            if (reg.waiting.length === 0) return;
+            if (reg.closed || reg.inRun || reg.ending) return stop();
+            if (reg.held.length === 0 && reg.waiting.length === 0) return stop();
+            if (!reg.isIdle() || reg.submitting || reg.personPending() || Date.now() < reg.quietUntil) return;
+            stop();
+            reg.waiting.push(...reg.held.splice(0));
             startTurnWith(reg, pi, []);
         } catch {
-            // session replaced meanwhile: its notices went with it
+            stop(); // session replaced meanwhile: its notices went with it
         }
-    }, 0).unref?.();
+    };
+    reg.idleWatch = setInterval(check, 250);
+    reg.idleWatch.unref?.();
+    setTimeout(check, 0).unref?.();
 }
 
 /** Start one turn carrying every waiting notice and these, as one message (see combine). */

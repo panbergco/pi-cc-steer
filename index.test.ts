@@ -426,3 +426,31 @@ test("Alt+↑ with a draft in the editor: the batch pi put back is still recogni
 	await sleep(300);
 	assert.equal(h.notices.length, 1, "released: the notice wakes the model");
 });
+
+test("a batch still on its way survives a later run's end: no notice turn ahead of it", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "FIRST" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx); // FIRST flushed; held upstream
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	// SECOND runs and ends while FIRST is still held by another extension
+	await h.handlers.input({ source: "interactive", text: "SECOND" }, h.ctx);
+	await h.handlers.agent_start({}, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+	await h.handlers.agent_settled({}, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 0, "FIRST is still on its way");
+});
+
+test("a different prompt that merely starts with the batch's text is not taken for the batch", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "FIRST" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	await h.handlers.input({ source: "interactive", text: "FIRST\nSECOND" }, h.ctx);
+	const r = await h.handlers.before_agent_start({ prompt: "FIRST\nSECOND" }, h.ctx);
+	assert.equal(r?.message, undefined, "FIRST itself is still on its way");
+});

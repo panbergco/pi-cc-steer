@@ -21,7 +21,7 @@ import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
-import { deliverHeld, deliverMidRun, idsOf, noticeArrived, scheduleTurn, takeWaiting } from "./notify.ts";
+import { deliverHeld, deliverMidRun, idsOf, noticeArrived, takeWaiting, watchIdle } from "./notify.ts";
 import { EVENT, SUBMISSION_EXPIRY } from "./types.ts";
 import type { UiContext } from "./types.ts";
 
@@ -75,24 +75,23 @@ export function registerBackground(pi: ExtensionAPI): Background {
     registerUi(pi, reg);
 
     // ── Notice delivery ───────────────────────────────────────────
+    // A prompt has passed pi's input handlers (or /tree navigation begun): no notice turn may cut in before it starts.
     const cancelPendingStart = () => {
-        reg.generation++;
+        reg.quietUntil = Date.now() + 5_000;
     };
     const release = (keep: (s: Submission) => boolean) => {
         const before = reg.submissions.length;
         reg.submissions = reg.submissions.filter((s) => keep(s) || (s.timer && clearTimeout(s.timer), false));
         // The last hold ended with pi idle (a command, a swallowed message): notices that waited for it start a turn.
-        if (before > 0 && reg.submissions.length === 0 && reg.isIdle() && !reg.ending) scheduleTurn(reg, pi);
+        if (before > 0 && reg.submissions.length === 0) watchIdle(reg, pi);
     };
     pi.on("agent_start", () => {
-        cancelPendingStart();
+        reg.inRun = true; // the run hands notices on from here (tool boundaries, its end)
+        reg.quietUntil = 0;
         // The prompt that reached pi idle is running (its notices rode in it, before_agent_start). Any other that
         // reached pi idle was refused, or swallowed by an extension after pi-cc-steer: nothing left to protect.
         release((s) => !s.reached);
         reg.closed = false; // a run in this session: any switch that began was cancelled
-    });
-    pi.on("agent_start", () => {
-        reg.inRun = true;
     });
     pi.on("agent_end", () => {
         reg.inRun = false;
@@ -110,10 +109,16 @@ export function registerBackground(pi: ExtensionAPI): Background {
         pi.on(e as "session_shutdown", close);
     }
     pi.on("session_before_tree", cancelPendingStart);
+    // Navigation done (or summarised): notices that waited through it may start their turn.
+    pi.on("session_tree", () => {
+        reg.quietUntil = 0;
+        watchIdle(reg, pi);
+    });
     // Any prompt (typed, RPC, a template, another extension) cancels a pending notice turn; its notices ride in
     // that prompt instead (before_agent_start below).
     pi.on("input", () => {
-        cancelPendingStart();
+        // pi idle: this prompt is about to start a run (its notices ride in it). pi busy: it is only queued.
+        if (reg.isIdle()) cancelPendingStart();
         reg.closed = false;
     });
     // A notice arriving a second time (re-sent after an abort that had not in fact cleared pi's queue) is hidden
@@ -181,7 +186,6 @@ export function registerBackground(pi: ExtensionAPI): Background {
         },
         promptSubmitted: (text, source, kind) => {
             const s: Submission = { text, source, reached: false };
-            cancelPendingStart();
             reg.submissions.push(s);
             // A command may never reach pi's input handlers: held 5 s. Anything else is held until it is seen, or for
             // 60 s (another extension swallowed it, or took longer than that over it).

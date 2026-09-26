@@ -58,9 +58,6 @@ export class BgRegistry {
     startsTurns = true;
     /** A run has ended and its notices have not been handed on yet (agent_end → deliverHeld). */
     ending = false;
-    /** Bumped by anything that should cancel a pending "start a turn for these notices": a prompt, a run
-     *  starting, a session switch or shutdown. */
-    generation = 0;
     /** A session switch or shutdown has begun: no notice turn starts (reset by the next input or run, in case
      *  the switch was cancelled). */
     closed = false;
@@ -74,8 +71,11 @@ export class BgRegistry {
     personPending: (except?: string) => boolean = () => false;
     /** A run is going on (agent_start … agent_end). */
     inRun = false;
-    /** Watching for pi to go idle with notices held outside a run (see notify.ts watchHeld). */
-    heldWatch?: ReturnType<typeof setInterval>;
+    /** Watching for the moment waiting notices may start their turn (see notify.ts watchIdle). */
+    idleWatch?: ReturnType<typeof setInterval>;
+    /** Until then something is about to happen that a notice turn must not cut into: a prompt that passed pi's
+     *  input handlers and has not started yet, or a /tree navigation. Cleared when a run starts or the tree is done. */
+    quietUntil = 0;
     /** Notices that arrived while pi was busy, not yet handed to pi. */
     held: Notice[] = [];
     /** Notices handed to pi, until pi shows they arrived. */

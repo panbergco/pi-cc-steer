@@ -219,8 +219,8 @@ void describe("notices that finish mid-run", () => {
     void it("a prompt or a run starting in between cancels the pending turn; the notices then ride in that prompt", async () => {
         const { reg, pi, messages } = harness();
         reg.held = [note("a")];
+        reg.quietUntil = Date.now() + 5_000; // e.g. the person's prompt passed pi's input handlers
         deliverHeld(reg, pi as never, false);
-        reg.generation++; // e.g. the person submitted a prompt
         await tick();
         assert.equal(messages.length, 0, "no turn of its own");
         assert.equal(takeWaiting(reg)?.content, "a");

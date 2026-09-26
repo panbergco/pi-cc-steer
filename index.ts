@@ -38,6 +38,7 @@ import {
 	textOf,
 } from "./steer.ts";
 import { registerBackground, restoredOnes } from "./background/index.ts";
+import { SUBMISSION_EXPIRY } from "./background/types.ts";
 
 const ENTRY = "cc-steer.mid-turn";
 const MARK = "cc-steer.interrupted";
@@ -48,14 +49,21 @@ const SEND_NOW_KEYS = ["ctrl+enter", "alt+s"] as const;
 /** Marks a reply cut off by send-now, so its empty remains stay out of the model's context. */
 const CUT = "ccSteerInterrupted";
 
-type Pending = { text: string; kind?: Framing; how: "steer" | "prompt"; images: boolean; settles: number };
+type Pending = { text: string; kind?: Framing; how: "steer" | "prompt"; images: boolean; since: number };
 
 export default function (pi: ExtensionAPI) {
 	// Claude Code's background bash (Ctrl+B). It replaces pi's bash tool, so it can be switched off.
 	const background = process.env.PI_CC_STEER_BACKGROUND === "0" ? undefined : registerBackground(pi);
 	// Notices wait while a batch of the person's messages is on its way into pi (handed over, not yet arrived).
+	// (pi may append notes to a prompt that carries images: for those, the batch is the start of the prompt.)
 	background?.setPersonPending((except) =>
-		pending.some((p) => p.how === "steer" && except !== p.text && !except?.startsWith(`${p.text}\n`)),
+		pending.some(
+			(p) =>
+				p.how === "steer" &&
+				Date.now() - p.since < SUBMISSION_EXPIRY.otherMs &&
+				except !== p.text &&
+				!(p.images && except?.startsWith(`${p.text}\n`)),
+		),
 	);
 	let queue: Queued[] = [];
 	/** Batches handed to pi and not yet seen arriving as a user message. */
@@ -92,7 +100,7 @@ export default function (pi: ExtensionAPI) {
 		if (queue.length === 0) return;
 		const batch = queue;
 		queue = [];
-		pending.push({ text: batchKey(batch.map((q) => q.text)), kind, how, images: batch.some((q) => q.images.length > 0), settles: 0 });
+		pending.push({ text: batchKey(batch.map((q) => q.text)), kind, how, images: batch.some((q) => q.images.length > 0), since: Date.now() });
 		const content = batchContent(batch) as Parameters<ExtensionAPI["sendUserMessage"]>[0];
 		// A prompt of the person's (send-now, or messages typed after the last turn): no notice turn may start before
 		// it, or pi would reject it; its notices ride in it.
@@ -148,8 +156,8 @@ export default function (pi: ExtensionAPI) {
 		// pi's Esc puts queued messages that never reached the model back in the editor: a batch whose text is now
 		// there is not on its way any more.
 		// A steer batch not yet arrived may still be on its way (another extension's slow input handler) and land as
-		// the next prompt: keep its record through this settle, and drop it at the next one (pi discarded it).
-		pending = pending.filter((p) => p.how === "prompt" || p.settles++ === 0);
+		// the next prompt: keep its record for up to 60 s (then it was swallowed or rewritten beyond recognition).
+		pending = pending.filter((p) => p.how === "prompt" || Date.now() - p.since < SUBMISSION_EXPIRY.otherMs);
 		// Such a batch starts the next run when it lands, so notices ride after it rather than start a turn ahead.
 		const batchOnItsWay = pending.some((p) => p.how === "steer");
 		const sending = queue.length > 0 && ctx.isIdle();

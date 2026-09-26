@@ -347,11 +347,21 @@ void describe("cancelling and failures (regressions)", () => {
             await h.handlers.get("session_start")!({}, { isIdle: () => true });
             await h.handlers.get("session_before_switch")!({} as never, uiCtx); // then cancelled by another extension
             await h.handlers.get(resume)!({ source: "interactive", text: "carry on" } as never, uiCtx);
+            if (resume === "agent_start") await h.handlers.get("agent_end")!({} as never, uiCtx);
+            if (resume === "agent_start") h.bg.deliverHeld(false); // the run settles
             await h.tools.get("bash")!.execute("tc-50", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
             await sleep(300);
-            assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1, `${resume}: idle notice starts a turn again`);
+            const notices = h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+            if (resume === "agent_start") assert.equal(notices, 1, "after a run: an idle notice starts a turn again");
+            else {
+                // a prompt is coming: the notice rides in it rather than starting a turn of its own
+                assert.equal(notices, 0);
+                const r = (await h.handlers.get("before_agent_start")!({} as never, uiCtx)) as unknown as { message?: { content: string } };
+                assert.match(r.message!.content, /<task-notification>/);
+            }
         }
     });
+
 
     void it("a command's hold timer that outlives its session (/new) does not crash pi", async () => {
         const h = startExtension();
@@ -430,6 +440,23 @@ void describe("cancelling and failures (regressions)", () => {
         assert.equal(notices(), 1, "the notice starts its turn");
     });
 
+    void it("/tree right after a run ends does not cancel the notice's turn for good", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        await h.handlers.get("agent_start")!({} as never, uiCtx);
+        await h.tools.get("bash")!.execute("tc-61", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        await h.handlers.get("agent_end")!({} as never, uiCtx);
+        h.bg.deliverHeld(false);
+        await h.handlers.get("session_before_tree")!({} as never, uiCtx); // before the turn could start
+        await sleep(100);
+        const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+        assert.equal(notices(), 0, "not during the navigation");
+        await h.handlers.get("session_tree")!({} as never, uiCtx);
+        await sleep(100);
+        assert.equal(notices(), 1, "after it");
+    });
+
     void it("a submission another extension rewrote is still recognised", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
@@ -496,7 +523,11 @@ void describe("cancelling and failures (regressions)", () => {
             h.bg.promptSubmitted("hello", "interactive");
             h.bg.promptSubmitted("later", "interactive"); // still inside another extension
             h.bg.submissionReached("hello", "interactive", idle);
-            if (idle) await h.handlers.get("agent_start")!({} as never, uiCtx);
+            if (idle) {
+                await h.handlers.get("agent_start")!({} as never, uiCtx); // hello's run
+                await h.handlers.get("agent_end")!({} as never, uiCtx);
+                h.bg.deliverHeld(false);
+            }
             await h.tools.get("bash")!.execute("tc-52", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
             await sleep(300);
             const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
