@@ -8,7 +8,7 @@ import {
     completionSummary,
     deliverHeld,
     escapeXml,
-    releaseWaiting,
+    takeWaiting,
     markNotified,
     sendTaskNotification,
 } from "../notify.ts";
@@ -149,23 +149,25 @@ void describe("notices that finish mid-run", () => {
         assert.equal(reg.held.length, 1);
     });
 
-    void it("ride after the person's next message when one is coming", () => {
-        const { reg, pi, messages, deliverOptions } = harness();
-        reg.held = [{ content: "a", details: {} }, { content: "b", details: {} }];
-        deliverHeld(reg, pi as never, true);
-        assert.equal(messages.length, 2);
-        assert.deepEqual(deliverOptions, [{ deliverAs: "nextTurn" }, { deliverAs: "nextTurn" }]);
+    void it("ride in the person's next prompt, as one message after it", () => {
+        const { reg, pi, messages } = harness();
+        reg.held = [{ content: "a", details: { status: "completed", summary: "A done" } }, { content: "b", details: { status: "failed", summary: "B failed" } }];
+        assert.equal(deliverHeld(reg, pi as never, true), 0);
+        assert.equal(messages.length, 0, "nothing handed to pi yet");
+        const m = takeWaiting(reg)!;
+        assert.equal(m.content, "a\n\nb");
+        assert.deepEqual(m.details, { status: "failed", summary: "A done; B failed" });
+        assert.equal(takeWaiting(reg), undefined, "taken once");
     });
 
     void it("after an interrupted or failed run, wait for the person's next message instead of restarting", () => {
         for (const setup of [(r: BgRegistry) => (r.endedCleanly = false), (r: BgRegistry) => ((r.endedCleanly = true), (r.compactionCancelled = true))]) {
-            const { reg, pi, messages, deliverOptions } = harness();
+            const { reg, pi, messages } = harness();
             setup(reg);
             reg.held = [{ content: "a", details: {} }];
-            deliverHeld(reg, pi as never, false);
+            assert.equal(deliverHeld(reg, pi as never, false), 1, "one notice now waits");
             assert.equal(messages.length, 0, "nothing sent, no new run");
-            releaseWaiting(reg, pi as never);
-            assert.deepEqual(deliverOptions, [{ deliverAs: "nextTurn" }]);
+            assert.equal(takeWaiting(reg)?.content, "a");
         }
     });
 

@@ -71,6 +71,7 @@ export function startBackgroundJob(args: {
         if (job.stopReason === "output_limit") {
             try {
                 truncateSync(job.logPath, MAX_LOG_BYTES);
+                appendFileSync(job.logPath, `\n[bg-tasks] output exceeded the ${MAX_LOG_BYTES / 1024 / 1024} MiB limit — task killed\n`);
             } catch { /* best-effort */ }
         }
         args.onExit?.(result);

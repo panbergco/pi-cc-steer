@@ -157,29 +157,30 @@ export function sendNotice(
 }
 
 /**
- * The run has ended: deliver the notices held during it.
- * - A message from the person is about to start the next run: they ride in it, after it ("nextTurn";
- *   pi places those after the person's message, the order Claude Code uses).
- * - The run was interrupted or failed (Esc, send-now, a failed retry, a cancelled compaction): they wait for
- *   the person's next message, so an interruption never restarts the agent.
+ * The run has ended: deliver the notices held during it. Returns how many now wait for the person.
+ * - A message from the person is about to start the next run: they ride in it, after it (Claude Code puts the
+ *   person's message first) — attached by the before_agent_start hook, see takeWaiting.
+ * - The run was interrupted or did not finish normally (Esc, send-now, a failed retry, a cancelled compaction,
+ *   a reply cut off by length): they wait for the next prompt, so the agent never starts again on its own.
  * - Otherwise they start one turn.
  */
-export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, withNextMessage: boolean): void {
+export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, withNextMessage: boolean): number {
     const held = reg.held;
     reg.held = [];
-    if (held.length === 0) return;
+    if (held.length === 0) return 0;
     if (withNextMessage) {
-        for (const n of [...reg.waiting.splice(0), ...held]) sendNotice(pi, n, { deliverAs: "nextTurn" });
-        return;
+        reg.waiting.push(...held);
+        return 0;
     }
     if (!reg.endedCleanly || reg.compactionCancelled) {
         reg.waiting.push(...held);
-        return;
+        return held.length;
     }
     startTurnWith(reg, pi, held);
+    return 0;
 }
 
-/** Start one turn carrying these notices, preceded by any still waiting from an interrupted run. */
+/** Start one turn carrying these notices, preceded by any still waiting. */
 export function startTurnWith(
     reg: BgRegistry,
     pi: Pick<ExtensionAPI, "sendMessage">,
@@ -189,7 +190,21 @@ export function startTurnWith(
     all.forEach((n, i) => sendNotice(pi, n, i === all.length - 1 ? DELIVER_NOTICE : {}));
 }
 
-/** The person sent a message: waiting notices ride in it, after it. */
-export function releaseWaiting(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
-    for (const n of reg.waiting.splice(0)) sendNotice(pi, n, { deliverAs: "nextTurn" });
+/**
+ * A prompt is about to start (any source: typed, RPC, a template, another extension): the waiting notices ride
+ * in it, after the prompt, as one message.
+ */
+export function takeWaiting(reg: BgRegistry):
+    | { customType: string; content: string; display: boolean; details: unknown }
+    | undefined {
+    const waiting = reg.waiting.splice(0);
+    if (waiting.length === 0) return undefined;
+    const details = waiting.map((n) => n.details as { status?: string; summary?: string });
+    const worst = details.find((d) => d.status === "failed")?.status ?? details.find((d) => d.status !== "completed")?.status ?? "completed";
+    return {
+        customType: EVENT.taskNotification,
+        content: waiting.map((n) => n.content).join("\n\n"),
+        display: true,
+        details: { status: worst, summary: details.map((d) => d.summary).filter(Boolean).join("; ") },
+    };
 }

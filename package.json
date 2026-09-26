@@ -1,6 +1,6 @@
 {
   "name": "pi-cc-steer",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Claude Code-style steering and background bash for pi: messages typed while the agent works go in together at the next tool boundary, framed for the model; Ctrl+Enter sends now; Ctrl+B moves a running command to the background.",
   "type": "module",
   "license": "MIT",
@@ -32,7 +32,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "sh -c 'd=$(mktemp -d) && TMPDIR=\"$d\" node --test steer.test.ts index.test.ts background/test/*.test.ts; s=$?; rm -rf \"$d\"; exit $s'"
+    "test": "sh -c 'd=$(mktemp -d) && trap \"rm -rf \\\"$d\\\"\" EXIT INT TERM && TMPDIR=\"$d\" node --test \"$@\" steer.test.ts index.test.ts background/test/*.test.ts' sh"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

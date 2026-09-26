@@ -21,7 +21,7 @@ import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
-import { deliverHeld, releaseWaiting } from "./notify.ts";
+import { deliverHeld, takeWaiting } from "./notify.ts";
 import type { UiContext } from "./types.ts";
 
 /** What pi-cc-steer needs from the engine. */
@@ -30,8 +30,9 @@ export interface Background {
     hasForeground(): boolean;
     /** Move every foreground bash command to the background. */
     backgroundAll(ctx: UiContext): boolean;
-    /** The run ended: deliver finish notices held during it (see notify.ts deliverHeld). */
-    deliverHeld(withNextMessage: boolean): void;
+    /** The run ended: deliver finish notices held during it (see notify.ts deliverHeld). Returns how many
+     *  now wait for the person's next message. */
+    deliverHeld(withNextMessage: boolean): number;
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -62,19 +63,17 @@ export function registerBackground(pi: ExtensionAPI): Background {
     pi.on("session_compact_failed", (event) => {
         if ((event as { aborted?: boolean }).aborted) reg.compactionCancelled = true;
     });
-    // The person sent a new message while idle: notices waiting from an interrupted run ride in it.
-    pi.on("input", (event) => {
-        const t = event.text.trimStart();
-        if (event.source === "interactive" && !event.streamingBehavior && !t.startsWith("/") && !t.startsWith("!")) {
-            releaseWaiting(reg, pi);
-        }
+    // Any prompt that actually starts a run carries the waiting notices, after the prompt.
+    pi.on("before_agent_start", () => {
+        const message = takeWaiting(reg);
+        return message ? { message } : undefined;
     });
     pi.on("agent_settled", () => {
         reg.agentRunning = false; // pi-cc-steer then calls deliverHeld for what arrived during the run
     });
 
-    // Typing while a command runs does not background it: the message waits (Claude Code's default for bash);
-    // pi-cc-steer queues it, and Ctrl+B or send-now are how the person moves on sooner.
+    // No input hook: typing while a command runs does not background it; the message waits (Claude Code's
+    // default for bash). pi-cc-steer queues it, and Ctrl+B or send-now are how the person moves on sooner.
 
     // ── Session start ─────────────────────────────────────────────
     pi.on("session_start", async () => {

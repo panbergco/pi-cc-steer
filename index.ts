@@ -142,7 +142,8 @@ export default function (pi: ExtensionAPI) {
 		const sending = queue.length > 0 && ctx.isIdle();
 		// Finish notices that arrived during the run: they ride in the next message when one is coming (after it,
 		// as in Claude Code), and wait for the person after an interruption; otherwise one starts a turn.
-		background?.deliverHeld(sending || interrupted || !ctx.isIdle());
+		const waiting = background?.deliverHeld(sending || interrupted || !ctx.isIdle()) ?? 0;
+		if (waiting > 0) ctx.ui.notify(`${waiting} background notice(s) will go in with your next message`, "info");
 		if (!sending) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});

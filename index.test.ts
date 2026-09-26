@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import ext from "./index.ts";
 
-function setup() {
+async function setup() {
 	// pi calls every handler for an event, in registration order, and stops at an input "handled".
 	const registered: Record<string, Function[]> = {};
 	const handlers: Record<string, Function> = new Proxy({} as Record<string, Function>, {
@@ -51,14 +51,14 @@ function setup() {
 		},
 		sessionManager: { getEntries: () => [] },
 	};
-	void handlers.session_start({}, ctx);
+	await handlers.session_start({}, ctx);
 	return { handlers, sent, notes, notices, tools, state, ctx };
 }
 
 const img = { type: "image", data: "x", mimeType: "image/png" };
 
 test("messages typed mid-turn go in together at the next tool boundary, as one steer", async () => {
-	const { handlers, sent, ctx } = setup();
+	const { handlers, sent, ctx } = await setup();
 	await handlers.input({ source: "interactive", streamingBehavior: "steer", text: "use pnpm" }, ctx);
 	await handlers.input({ source: "interactive", streamingBehavior: "steer", text: "and add a test" }, ctx);
 	assert.equal(sent.length, 0, "held while the tool runs");
@@ -67,7 +67,7 @@ test("messages typed mid-turn go in together at the next tool boundary, as one s
 });
 
 test("an interruption that is not a send-now returns the text to the editor, drops images with a warning, sends nothing", async () => {
-	const { handlers, sent, notes, state, ctx } = setup();
+	const { handlers, sent, notes, state, ctx } = await setup();
 	await handlers.input({ source: "interactive", streamingBehavior: "steer", text: "look at this", images: [img] }, ctx);
 	await handlers.input({ source: "interactive", streamingBehavior: "steer", text: "and fix it" }, ctx);
 	state.editor = "draft";
@@ -83,7 +83,7 @@ test("an interruption that is not a send-now returns the text to the editor, dro
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** A background job that finishes while pi runs a turn; returns once its notice is held. */
-async function finishJobMidRun(h: ReturnType<typeof setup>) {
+async function finishJobMidRun(h: Awaited<ReturnType<typeof setup>>) {
 	await h.handlers.agent_start({}, h.ctx);
 	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
 	await sleep(300);
@@ -91,33 +91,57 @@ async function finishJobMidRun(h: ReturnType<typeof setup>) {
 }
 
 test("a finish notice rides after the message the person queued, in the same run", async () => {
-	const h = setup();
+	const h = await setup();
 	await finishJobMidRun(h);
 	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
 	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "now do X" }, h.ctx);
 	h.state.idle = true;
 	await h.handlers.agent_settled({}, h.ctx);
 	assert.deepEqual(h.sent, [[{ type: "text", text: "now do X" }]], "the person's message starts the next run");
-	assert.deepEqual(h.notices.map((n) => n.opts), [{ deliverAs: "nextTurn" }], "the notice rides in it, after it");
+	assert.equal(h.notices.length, 0, "not a run of its own");
+	const r = await h.handlers.before_agent_start({ prompt: "now do X" }, h.ctx);
+	assert.match(r.message.content, /<task-notification>/, "it rides in that prompt, after it");
 });
 
 test("after a failed retry the notice waits for the person instead of restarting the agent", async () => {
-	const h = setup();
+	const h = await setup();
 	await finishJobMidRun(h);
 	await h.handlers.turn_end({ message: { stopReason: "error" }, toolResults: [] }, h.ctx);
 	h.state.idle = true;
 	await h.handlers.agent_settled({}, h.ctx);
 	assert.equal(h.notices.length, 0, "no new run");
-	await h.handlers.input({ source: "interactive", text: "what happened?" }, h.ctx);
-	assert.deepEqual(h.notices.map((n) => n.opts), [{ deliverAs: "nextTurn" }]);
+	assert.match(h.notes.at(-1)!, /1 background notice/, "the person is told it waits");
+	// any prompt that starts next (typed, RPC, a template) carries it
+	const r = await h.handlers.before_agent_start({ prompt: "/skill:x" }, h.ctx);
+	assert.match(r.message.content, /<task-notification>/);
 });
 
 test("after a clean run with nothing queued, the notice starts one turn", async () => {
-	const h = setup();
+	const h = await setup();
 	await finishJobMidRun(h);
 	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
 	h.state.idle = true;
 	await h.handlers.agent_settled({}, h.ctx);
 	assert.deepEqual(h.notices.map((n) => n.opts), [{ triggerTurn: true }]);
 	assert.equal(h.sent.length, 0);
+});
+
+test("an Esc during a tool (turn ends as toolUse, signal aborted) does not restart the agent for a notice", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	h.ctx.signal.aborted = true;
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	assert.equal(h.notices.length, 0, "no new run");
+});
+
+test("a compaction cancelled during the run makes the notice wait instead of restarting the agent", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+	await h.handlers.session_compact_failed({ aborted: true, reason: "threshold" }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	assert.equal(h.notices.length, 0, "no new run");
 });

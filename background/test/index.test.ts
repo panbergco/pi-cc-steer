@@ -210,9 +210,8 @@ void describe("typing while a command runs", () => {
     void it("a message typed mid-command does not background it: the command runs to the end (Claude Code's default)", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, {});
+        assert.equal(h.handlers.has("input"), false, "nothing reacts to typing");
         const pending = h.tools.get("bash")!.execute("tc-30", { command: "sleep 3; echo still-foreground" }, undefined, undefined, uiCtx);
-        await sleep(2_500);
-        await h.handlers.get("input")!({ source: "interactive", streamingBehavior: "steer", text: "hurry up" } as never, uiCtx);
         const res = await pending;
         assert.ok(res.content[0].text.includes("still-foreground"), `ran in the foreground, got: ${res.content[0].text}`);
     });
