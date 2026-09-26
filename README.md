@@ -107,7 +107,8 @@ Modelled on Claude Code's background bash:
 | A command is still running after 2 s | A hint appears under the editor: `(ctrl+b to run in background)` (`ctrl+b ctrl+b` inside tmux, where Ctrl+B is the prefix). |
 | **Ctrl+B** (or Ctrl+Shift+B, or `/bg`) while it runs | The command keeps running with its output going to a log file. The model is told it was backgrounded and carries on; messages you queued go in at that point. With nothing running, Ctrl+B is still cursor-left. |
 | The command reaches its timeout (120 s by default) | It moves to the background instead of being killed. |
-| A background command finishes | The model gets one notice with its status, exit code, output tail and log path. If pi is idle it starts a turn. If pi is busy the notice waits for the run to end, then goes in right after your next message, or starts a turn itself when nothing else follows. After an interruption, a failed retry or other error, a cancelled compaction, or a reply cut off by length it waits instead, and you are told: it goes in with the next prompt (typed, from RPC, a template or another extension's prompt), so the agent does not start again on its own. |
+| A background command finishes | The model gets one notice with its status, exit code, output tail and log path, as in Claude Code: at the next tool boundary if pi is busy (always after messages you queued), or as a new turn if pi is idle — including just after an Esc, once pi has stopped. If your message is about to start the next run, the notice goes in with it, after it. A notice cleared from pi's queue by an interruption is delivered again; one that survived it is not repeated. |
+| A background command goes quiet at what looks like a prompt | After 45 s without new output, if its last line looks like `(y/n)`, `[Y/n]`, `Press any key`, `Continue?`, `Overwrite?` or a "Do you…?" question, the model is told once, with the last output and how to re-run it non-interactively (Claude Code's rule). |
 | Esc, or a send-now, while a command runs in the foreground | The command and everything it started are stopped at once, as pi's own bash does. |
 | You type a message while a command runs | It waits for the command, as in Claude Code; press Ctrl+B to move on sooner. |
 
@@ -123,8 +124,8 @@ killed); a background log is then trimmed to 64 MiB, and a foreground one is del
 The engine is adapted from [pi-bg-tasks](https://github.com/cyzlmh/pi-extensions/tree/main/pi-bg-tasks) (MIT, © cyzlmh),
 itself a fork of [pi-patty-bg-tasks](https://github.com/patty-io/pi-patty-bg-tasks) (MIT, © patty.io). Changes: Ctrl+B
 through pi-cc-steer's editor, typing no longer backgrounds a command, logs follow `TMPDIR`, an interrupted, timed-out or externally
-killed command reads as pi's own does, cancelling kills stubborn commands, finish notices are held by the extension
-until a run ends, commands get pi's `PI_*` variables, the log cap covers foreground commands, and the macOS sandbox
+killed command reads as pi's own does, cancelling kills stubborn commands, finish notices are held by the extension until
+pi can take them without jumping ahead of you, a stuck-prompt warning is added, commands get pi's `PI_*` variables, the log cap covers foreground commands, and the macOS sandbox
 display helper is dropped.
 
 ## Compared with Claude Code
@@ -146,7 +147,8 @@ and the text the model sees is original.
 | Queued images restored when editing | yes | no | no | no, they stay queued |
 | Move a running command to the background | Ctrl+B | — | — | **Ctrl+B** (or Ctrl+Shift+B, `/bg`) |
 | A command that hits its timeout | moves to the background | killed | killed | **moves to the background** |
-| Notice when a background command finishes | yes | — | — | **yes** |
+| Notice when a background command finishes | yes, at the next tool boundary | — | — | **yes, at the next tool boundary** |
+| Warning when a background command is stuck at a prompt | yes | — | — | **yes** |
 
 The small differences that remain:
 
@@ -168,12 +170,9 @@ The small differences that remain:
 - **A cut-off tool keeps only what its final error carries.** pi's bash tool keeps its final output (truncated if
   long) and a reference to the full-output file; a custom tool that streamed output and then reports only
   "Operation aborted" shows just the note.
-- **Finish notices around interruptions.** If you press Esc while another extension's slow end-of-run handler is
-  still running, a held finish notice can start one extra turn. A notice waiting after an interruption is not
-  carried by a turn another extension starts with its own custom message; it goes in with the next prompt.
 - **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
-- **Nothing is persisted.** Queued messages, and finish notices waiting for your next message, live in memory, as pi's own queue does: `/reload`, exit or
+- **Nothing is persisted.** Queued messages, and finish notices not yet delivered, live in memory, as pi's own queue does: `/reload`, exit or
   switching sessions drops them. If pi refuses the queued prompt (no model, no API key), pi shows its error and the
   text is not put back.
 - **Timing during compaction or retry.** A message typed while pi retries waits for the next tool batch to finish;
@@ -189,9 +188,9 @@ The small differences that remain:
 - **Editors.** An extension that replaces the editor after pi-cc-steer loads removes its keys; a modal (vim-style)
   editor loses Esc while messages wait.
 
-- **Background commands, not yet like Claude Code:** no warning when a background command sits waiting on an
-  interactive prompt (Claude Code notices after 45 s), `sleep` is not treated specially, the log cap is 64 MiB
-  (Claude Code: 5 GB), and there is no interactive task manager — `/bg-tasks` prints a list.
+- **Background commands, not yet like Claude Code:** `sleep` is not treated specially, the log cap is 64 MiB
+  (Claude Code: 5 GB), a command running in the foreground is not checked for a stuck prompt until it is moved to
+  the background (as in Claude Code), and there is no interactive task manager — `/bg-tasks` prints a list.
 - **Shell settings.** Commands run as `bash -c` with the environment pi's own bash gives them (pi's `bin` directory
   on `PATH`, the session's `PI_*` variables), but pi's `shellPath` and `shellCommandPrefix` settings are not applied.
   Start pi with `PI_CC_STEER_BACKGROUND=0` if you rely on them.

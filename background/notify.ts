@@ -6,10 +6,8 @@
  * Task-completion notifications.
  *
  * Every backgrounded job that reaches a terminal state sends its OWN
- * <task-notification> XML message, exactly once, the moment it exits. While the
- * agent is running it is held until the run ends, then rides in the person's
- * next message (after it) or, when nothing else follows, starts a turn itself;
- * when idle it starts a turn at once.
+ * <task-notification> XML message, exactly once, the moment it exits. See
+ * deliverNotice for when it reaches the model.
  *
  * Exactly-once is enforced by the job's `notified` latch — a check-and-set
  * done BEFORE the send, so any path that already surfaced the outcome (a
@@ -111,6 +109,32 @@ export function markNotified(job: BgJob): void {
  *
  * Returns true when the notification was sent.
  */
+/** A notice for the model: a completion, or a warning that a command looks stuck. */
+export interface Notice {
+    id: string;
+    content: string;
+    details: { jobId?: string; status?: string; summary?: string; noticeId?: string; [k: string]: unknown };
+}
+
+function makeNotice(reg: BgRegistry, content: string, details: Notice["details"]): Notice {
+    const id = `n${++reg.noticeSeq}`;
+    return { id, content, details: { ...details, noticeId: id } };
+}
+
+/**
+ * Hand a notice on, the way Claude Code does:
+ * - pi idle: it starts a turn now;
+ * - pi busy: it is held here, and goes in at the next tool boundary after the person's own queued messages
+ *   (deliverMidRun), or once the run ends (deliverHeld).
+ */
+export function deliverNotice(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notice: Notice): void {
+    if (reg.agentRunning) {
+        reg.held.push(notice);
+        return;
+    }
+    startTurnWith(reg, pi, [notice]);
+}
+
 export function sendTaskNotification(args: {
     reg: BgRegistry;
     pi: Pick<ExtensionAPI, "sendMessage">;
@@ -121,21 +145,14 @@ export function sendTaskNotification(args: {
     job.notified = true;
     const status = job.status as TerminalStatus;
     const summary = completionSummary(job, status);
-
-    const notice = {
-        content: buildTaskNotification({ job, status, summary }),
-        details: { jobId: job.id, status, summary, outputFile: job.logPath },
-    };
-    // Mid-run: hold it here until the run ends (see deliverHeld), so it never takes the place of a message
-    // the person queued and an abort cannot wipe it out.
-    if (reg.agentRunning) {
-        reg.held.push(notice);
-        forget(reg, job);
-        return true;
-    }
+    const notice = makeNotice(reg, buildTaskNotification({ job, status, summary }), {
+        jobId: job.id,
+        status,
+        summary,
+        outputFile: job.logPath,
+    });
     try {
-        // Idle: start a turn, with any notice still waiting from an interrupted run ahead of it.
-        startTurnWith(reg, pi, [notice]);
+        deliverNotice(reg, pi, notice);
     } catch (err) {
         console.error("[bg-tasks] task notification failed:", err);
         return false;
@@ -144,11 +161,35 @@ export function sendTaskNotification(args: {
     return true;
 }
 
-/** Hand a notice to pi, waking an idle agent. */
+/** A background command has gone quiet on what looks like an interactive prompt: tell the model, once. */
+export function sendStallNotice(args: {
+    reg: BgRegistry;
+    pi: Pick<ExtensionAPI, "sendMessage">;
+    job: BgJob;
+    tail: string;
+}): void {
+    const { reg, pi, job, tail } = args;
+    const summary = `Background command "${describeJob(job)}" appears to be waiting for interactive input`;
+    const content = [
+        "<task-notification>",
+        `<task_id>${escapeXml(job.id)}</task_id>`,
+        `<output_file>${escapeXml(job.logPath)}</output_file>`,
+        `<summary>${escapeXml(summary)}</summary>`,
+        "</task-notification>",
+        "Last output:",
+        stripAnsi(tail).trimEnd(),
+        "",
+        "It is probably blocked on a prompt that nobody will answer. Stop it with bg_stop and run it again with the " +
+            "answer piped in (for example `yes | command`) or with a non-interactive flag, if the command has one.",
+    ].join("\n");
+    deliverNotice(reg, pi, makeNotice(reg, content, { jobId: job.id, status: "stalled", summary }));
+}
+
+/** Hand a notice to pi. By default it wakes an idle agent. */
 export function sendNotice(
     pi: Pick<ExtensionAPI, "sendMessage">,
-    notice: { content: string; details: unknown },
-    options: { deliverAs?: "nextTurn"; triggerTurn?: boolean } = DELIVER_NOTICE
+    notice: Notice,
+    options: { deliverAs?: "steer" | "nextTurn"; triggerTurn?: boolean } = DELIVER_NOTICE
 ): void {
     pi.sendMessage(
         { customType: EVENT.taskNotification, content: notice.content, display: true, details: notice.details },
@@ -157,35 +198,52 @@ export function sendNotice(
 }
 
 /**
- * The run has ended: deliver the notices held during it. Returns how many now wait for the person.
- * - A message from the person is about to start the next run: they ride in it, after it (Claude Code puts the
- *   person's message first) — attached by the before_agent_start hook, see takeWaiting.
- * - The run was interrupted or did not finish normally (Esc, send-now, a failed retry, a cancelled compaction,
- *   a reply cut off by length): they wait for the next prompt, so the agent never starts again on its own.
- * - Otherwise they start one turn.
+ * A tool boundary where the run goes on: notices go in now, as steering messages queued after the person's own
+ * (pi keeps them in order). A copy stays "in flight" until pi shows it arrived, because an abort can clear pi's
+ * queue (see deliverHeld).
  */
-export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, withNextMessage: boolean): number {
-    const held = reg.held;
-    reg.held = [];
-    if (held.length === 0) return 0;
-    if (withNextMessage) {
-        reg.waiting.push(...held);
-        return 0;
+export function deliverMidRun(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
+    for (const n of [...reg.waiting.splice(0), ...reg.held.splice(0)]) {
+        reg.inFlight.set(n.id, n);
+        sendNotice(pi, n, { deliverAs: "steer" });
     }
-    if (!reg.endedCleanly || reg.compactionCancelled) {
-        reg.waiting.push(...held);
-        return reg.waiting.length;
-    }
-    startTurnWith(reg, pi, held);
-    return 0;
 }
 
-/** Start one turn carrying these notices, preceded by any still waiting. */
-export function startTurnWith(
+/** pi delivered a notice into the conversation. */
+export function noticeArrived(reg: BgRegistry, noticeId: string | undefined): void {
+    if (noticeId) reg.inFlight.delete(noticeId);
+}
+
+/**
+ * The run has ended. Notices held during it, waiting from before, or sent but wiped from pi's queue by an abort
+ * (pi's queue is empty yet they never arrived) are delivered:
+ * - a prompt is about to start (the person's queued message, or another run): they ride in it, after the prompt;
+ * - otherwise they start one turn, just after pi has finished stopping — as Claude Code wakes the model when a
+ *   background command finishes, including after an Esc — without holding up the stop itself.
+ */
+export function deliverHeld(
     reg: BgRegistry,
     pi: Pick<ExtensionAPI, "sendMessage">,
-    notices: { content: string; details: unknown }[]
+    withNextMessage: boolean,
+    piQueueEmpty: boolean
 ): void {
+    reg.waiting.push(...reg.held.splice(0));
+    if (piQueueEmpty) {
+        reg.waiting.push(...reg.inFlight.values());
+        reg.inFlight.clear();
+    }
+    if (reg.waiting.length === 0 || withNextMessage) return;
+    setTimeout(() => {
+        try {
+            if (!reg.agentRunning && reg.waiting.length > 0) startTurnWith(reg, pi, []);
+        } catch {
+            // session replaced meanwhile: its notices went with it
+        }
+    }, 0).unref?.();
+}
+
+/** Start one turn carrying every waiting notice and these; only the last one triggers the turn. */
+export function startTurnWith(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notices: Notice[]): void {
     const all = [...reg.waiting.splice(0), ...notices];
     all.forEach((n, i) => sendNotice(pi, n, i === all.length - 1 ? DELIVER_NOTICE : {}));
 }
@@ -199,8 +257,9 @@ export function takeWaiting(reg: BgRegistry):
     | undefined {
     const waiting = reg.waiting.splice(0);
     if (waiting.length === 0) return undefined;
-    const details = waiting.map((n) => n.details as { status?: string; summary?: string });
-    const worst = details.find((d) => d.status === "failed")?.status ?? details.find((d) => d.status !== "completed")?.status ?? "completed";
+    const details = waiting.map((n) => n.details);
+    const worst =
+        details.find((d) => d.status === "failed")?.status ?? details.find((d) => d.status !== "completed")?.status ?? "completed";
     return {
         customType: EVENT.taskNotification,
         content: waiting.map((n) => n.content).join("\n\n"),

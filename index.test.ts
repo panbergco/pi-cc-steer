@@ -20,24 +20,26 @@ async function setup() {
 	const sent: unknown[] = [];
 	const notes: string[] = [];
 	const notices: { content: string; opts: unknown }[] = [];
+	const order: string[] = [];
 	const tools: Record<string, any> = {};
 	const pi: any = {
 		on: (e: string, h: Function) => (registered[e] ??= []).push(h),
 		registerEntryRenderer() {},
 		appendEntry() {},
-		sendUserMessage: (c: unknown) => sent.push(c),
+		sendUserMessage: (c: unknown) => (sent.push(c), order.push("message")),
 		registerTool: (t: any) => (tools[t.name] = t),
 		registerShortcut() {},
 		registerCommand() {},
 		registerMessageRenderer() {},
-		sendMessage: (m: { content: string }, opts: unknown) => notices.push({ content: m.content, opts }),
+		sendMessage: (m: { content: string }, opts: unknown) => (notices.push({ content: m.content, opts }), order.push("notice")),
 	};
 	ext(pi);
-	const state = { idle: false, editor: "" };
+	const state = { idle: false, editor: "", piQueue: 0 };
 	const ctx: any = {
 		mode: "tui",
 		cwd: process.cwd(),
 		isIdle: () => state.idle,
+		hasPendingMessages: () => state.piQueue > 0,
 		signal: { aborted: false },
 		ui: {
 			setWidget() {},
@@ -52,7 +54,7 @@ async function setup() {
 		sessionManager: { getEntries: () => [] },
 	};
 	await handlers.session_start({}, ctx);
-	return { handlers, sent, notes, notices, tools, state, ctx };
+	return { handlers, sent, notes, notices, order, tools, state, ctx };
 }
 
 const img = { type: "image", data: "x", mimeType: "image/png" };
@@ -81,6 +83,7 @@ test("an interruption that is not a send-now returns the text to the editor, dro
 });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const tick = () => sleep(5);
 
 /** A background job that finishes while pi runs a turn; returns once its notice is held. */
 async function finishJobMidRun(h: Awaited<ReturnType<typeof setup>>) {
@@ -90,75 +93,65 @@ async function finishJobMidRun(h: Awaited<ReturnType<typeof setup>>) {
 	assert.equal(h.notices.length, 0, "held while pi runs");
 }
 
-test("a finish notice rides after the message the person queued, in the same run", async () => {
+test("a finish notice goes in at the next tool boundary, after the message the person queued", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "fix it" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	assert.deepEqual(h.order, ["message", "notice"], "the person's message first, as in Claude Code");
+	assert.deepEqual(h.notices.map((n) => n.opts), [{ deliverAs: "steer" }]);
+});
+
+test("a finish notice pending when the run ends starts a turn once pi has stopped (Claude Code wakes the model)", async () => {
+	for (const stop of ["stop", "error", "aborted"]) {
+		const h = await setup();
+		await finishJobMidRun(h);
+		await h.handlers.turn_end({ message: { stopReason: stop }, toolResults: [] }, h.ctx);
+		h.state.idle = true;
+		await h.handlers.agent_settled({}, h.ctx);
+		assert.equal(h.notices.length, 0, `${stop}: not inside the stop`);
+		await tick();
+		assert.deepEqual(h.notices.map((n) => n.opts), [{ triggerTurn: true }], `${stop}: one turn`);
+	}
+});
+
+test("an abort that wipes pi's queue does not lose a notice already handed over, and one that keeps it does not repeat it", async () => {
+	for (const [piQueue, expected] of [[0, 2], [1, 1]] as const) {
+		const h = await setup();
+		await finishJobMidRun(h);
+		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+		assert.equal(h.notices.length, 1, "handed over at the boundary");
+		h.ctx.signal.aborted = true;
+		await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
+		h.state.idle = true;
+		h.state.piQueue = piQueue;
+		await h.handlers.agent_settled({}, h.ctx);
+		await tick();
+		assert.equal(h.notices.length, expected);
+	}
+});
+
+test("a notice that arrived is never sent again", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	await h.handlers.message_end({ message: { role: "custom", customType: "bg-task-notification", details: { noticeId: "n1" } } }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	await tick();
+	assert.equal(h.notices.length, 1);
+});
+
+test("after a send-now, the notice rides after the person's message in the same run", async () => {
 	const h = await setup();
 	await finishJobMidRun(h);
 	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
 	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "now do X" }, h.ctx);
 	h.state.idle = true;
 	await h.handlers.agent_settled({}, h.ctx);
-	assert.deepEqual(h.sent, [[{ type: "text", text: "now do X" }]], "the person's message starts the next run");
+	await tick();
 	assert.equal(h.notices.length, 0, "not a run of its own");
 	const r = await h.handlers.before_agent_start({ prompt: "now do X" }, h.ctx);
-	assert.match(r.message.content, /<task-notification>/, "it rides in that prompt, after it");
-});
-
-test("after a failed retry the notice waits for the person instead of restarting the agent", async () => {
-	const h = await setup();
-	await finishJobMidRun(h);
-	await h.handlers.turn_end({ message: { stopReason: "error" }, toolResults: [] }, h.ctx);
-	h.state.idle = true;
-	await h.handlers.agent_settled({}, h.ctx);
-	assert.equal(h.notices.length, 0, "no new run");
-	assert.match(h.notes.at(-1)!, /1 background notice/, "the person is told it waits");
-	// any prompt that starts next (typed, RPC, a template) carries it
-	const r = await h.handlers.before_agent_start({ prompt: "/skill:x" }, h.ctx);
 	assert.match(r.message.content, /<task-notification>/);
-});
-
-test("after a clean run with nothing queued, the notice starts one turn", async () => {
-	const h = await setup();
-	await finishJobMidRun(h);
-	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
-	h.state.idle = true;
-	await h.handlers.agent_settled({}, h.ctx);
-	assert.deepEqual(h.notices.map((n) => n.opts), [{ triggerTurn: true }]);
-	assert.equal(h.sent.length, 0);
-});
-
-test("an Esc during a tool (turn ends as toolUse, signal aborted) does not restart the agent for a notice", async () => {
-	const h = await setup();
-	await finishJobMidRun(h);
-	h.ctx.signal.aborted = true;
-	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
-	h.state.idle = true;
-	await h.handlers.agent_settled({}, h.ctx);
-	assert.equal(h.notices.length, 0, "no new run");
-});
-
-test("a compaction cancelled during the run makes the notice wait instead of restarting the agent", async () => {
-	const h = await setup();
-	await finishJobMidRun(h);
-	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
-	await h.handlers.session_compact_failed({ aborted: true, reason: "threshold" }, h.ctx);
-	h.state.idle = true;
-	await h.handlers.agent_settled({}, h.ctx);
-	assert.equal(h.notices.length, 0, "no new run");
-});
-
-test("after a cancelled compaction, the next clean run's notice starts a turn again", async () => {
-	const h = await setup();
-	await finishJobMidRun(h);
-	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
-	await h.handlers.session_compact_failed({ aborted: true, reason: "threshold" }, h.ctx);
-	h.state.idle = true;
-	await h.handlers.agent_settled({}, h.ctx);
-	assert.equal(h.notices.length, 0);
-	h.state.idle = false;
-	await finishJobMidRun(h); // a new run: the cancelled compaction belongs to the last one
-	await h.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h.ctx);
-	h.state.idle = true;
-	await h.handlers.agent_settled({}, h.ctx);
-	assert.deepEqual(h.notices.map((n) => n.opts).at(-1), { triggerTurn: true }, "starts a turn, carrying both");
-	assert.equal(h.notices.length, 2, "the one that waited goes first, then the new one");
 });

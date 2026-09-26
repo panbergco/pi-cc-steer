@@ -21,7 +21,8 @@ import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
-import { deliverHeld, takeWaiting } from "./notify.ts";
+import { deliverHeld, deliverMidRun, noticeArrived, takeWaiting } from "./notify.ts";
+import { EVENT } from "./types.ts";
 import type { UiContext } from "./types.ts";
 
 /** What pi-cc-steer needs from the engine. */
@@ -30,9 +31,10 @@ export interface Background {
     hasForeground(): boolean;
     /** Move every foreground bash command to the background. */
     backgroundAll(ctx: UiContext): boolean;
-    /** The run ended: deliver finish notices held during it (see notify.ts deliverHeld). Returns how many
-     *  now wait for the person's next message. */
-    deliverHeld(withNextMessage: boolean): number;
+    /** A tool boundary where the run goes on, after pi-cc-steer queued its own batch: notices go in now. */
+    deliverMidRun(): void;
+    /** The run ended (see notify.ts deliverHeld). */
+    deliverHeld(withNextMessage: boolean, piQueueEmpty: boolean): void;
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -53,15 +55,10 @@ export function registerBackground(pi: ExtensionAPI): Background {
     // ── Notice delivery ───────────────────────────────────────────
     pi.on("agent_start", () => {
         reg.agentRunning = true;
-        reg.endedCleanly = false;
-        reg.compactionCancelled = false;
     });
-    pi.on("turn_end", (event, ctx) => {
-        const stop = (event.message as { stopReason?: string }).stopReason;
-        reg.endedCleanly = (stop === "stop" || stop === "toolUse") && !ctx.signal?.aborted;
-    });
-    pi.on("session_compact_failed", (event) => {
-        if ((event as { aborted?: boolean }).aborted) reg.compactionCancelled = true;
+    pi.on("message_end", (event) => {
+        const m = event.message as { role: string; customType?: string; details?: { noticeId?: string } };
+        if (m.role === "custom" && m.customType === EVENT.taskNotification) noticeArrived(reg, m.details?.noticeId);
     });
     // Any prompt that actually starts a run carries the waiting notices, after the prompt.
     pi.on("before_agent_start", () => {
@@ -104,6 +101,7 @@ export function registerBackground(pi: ExtensionAPI): Background {
     return {
         hasForeground: () => reg.foreground.size > 0,
         backgroundAll: (ctx) => backgroundActiveForeground(reg, ctx),
-        deliverHeld: (withNextMessage) => deliverHeld(reg, pi, withNextMessage),
+        deliverMidRun: () => deliverMidRun(reg, pi),
+        deliverHeld: (withNextMessage, piQueueEmpty) => deliverHeld(reg, pi, withNextMessage, piQueueEmpty),
     };
 }

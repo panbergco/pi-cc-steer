@@ -26,6 +26,12 @@ export const MAX_LOG_BYTES = 64 * 1024 * 1024;
 export const OUTPUT_WATCH_INTERVAL_MS = 2_000;
 /** A foreground command is watched more often: nothing else bounds how fast it fills the temp dir. */
 export const FOREGROUND_WATCH_INTERVAL_MS = 250;
+/** Stuck-prompt check on background commands (Claude Code's timings): look every 5 s; after 45 s with no new
+ *  output, read the last 1 KiB and warn the model once if its last line looks like an interactive prompt. */
+export const STALL_CHECK_MS = 5_000;
+export const STALL_AFTER_MS = 45_000;
+export const STALL_TAIL_BYTES = 1_024;
+
 /** Grace window between SIGTERM and SIGKILL on every stop path. */
 export const SIGTERM_GRACE_MS = 5_000;
 export const RECENT_TERMINAL_KEEP = 20;

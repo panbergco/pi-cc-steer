@@ -314,10 +314,10 @@ void describe("cancelling and failures (regressions)", () => {
         await sleep(400);
         const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
         assert.equal(notices(), 0, "held while the run is going");
-        await h.handlers.get("turn_end")!({ message: { stopReason: "stop" }, toolResults: [] } as never, { ...uiCtx, signal: undefined });
         await h.handlers.get("agent_settled")!({}, uiCtx);
-        h.bg.deliverHeld(false);
-        h.bg.deliverHeld(false);
+        h.bg.deliverHeld(false, true);
+        h.bg.deliverHeld(false, true);
+        await sleep(20);
         assert.equal(notices(), 1, "delivered once when the run ends");
     });
 });

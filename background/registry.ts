@@ -22,6 +22,7 @@ import {
     type ForegroundSlot,
 } from "./types.ts";
 import { readBoundedTail } from "./output.ts";
+import type { Notice } from "./notify.ts";
 
 /** One registry per session, threaded through every tool and helper. */
 export class BgRegistry {
@@ -40,14 +41,13 @@ export class BgRegistry {
 
     /** pi is running (between agent_start and agent_settled). */
     agentRunning = false;
-    /** The run's last turn completed normally (stop or tool use, not aborted or failed). */
-    endedCleanly = false;
-    /** A compaction in this run was cancelled (Esc during compaction ends no turn). */
-    compactionCancelled = false;
-    /** Completion notices that arrived mid-run, waiting for the run to end (Claude Code's 'later' priority). */
-    held: { content: string; details: unknown }[] = [];
-    /** Notices from an interrupted run, waiting for the person's next message. */
-    waiting: { content: string; details: unknown }[] = [];
+    /** Notices that arrived mid-run, not yet handed to pi. */
+    held: Notice[] = [];
+    /** Notices handed to pi mid-run, until pi shows they arrived. */
+    inFlight = new Map<string, Notice>();
+    /** Notices waiting for the next prompt or turn. */
+    waiting: Notice[] = [];
+    noticeSeq = 0;
 }
 
 // --- ID generation -------------------------------------------------------

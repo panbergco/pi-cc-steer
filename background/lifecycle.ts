@@ -16,6 +16,9 @@ import {
     FOREGROUND_WATCH_INTERVAL_MS,
     MAX_LOG_BYTES,
     OUTPUT_WATCH_INTERVAL_MS,
+    STALL_AFTER_MS,
+    STALL_CHECK_MS,
+    STALL_TAIL_BYTES,
     type BgJob,
     type JobStatus,
     type SpawnExit,
@@ -24,7 +27,8 @@ import {
 import type { BgRegistry } from "./registry.ts";
 import { atConcurrencyLimit, forget, markStarted } from "./registry.ts";
 import { killProcessTree, killWithGrace } from "./spawn.ts";
-import { markNotified, sendTaskNotification } from "./notify.ts";
+import { markNotified, sendStallNotice, sendTaskNotification } from "./notify.ts";
+import { readBoundedTail } from "./output.ts";
 import { renderStatusPill } from "./ui.ts";
 
 // --- Background-job orchestration ----------------------------------------
@@ -66,8 +70,10 @@ export function startBackgroundJob(args: {
         },
         FOREGROUND_WATCH_INTERVAL_MS
     );
+    const stopStall = watchStall(job, (tail) => sendStallNotice({ reg, pi, job, tail }));
     void exit.then((result) => {
         stopWatcher();
+        stopStall();
         if (job.stopReason === "output_limit") {
             try {
                 truncateSync(job.logPath, MAX_LOG_BYTES);
@@ -267,4 +273,61 @@ export function detectNonInteractive(
 ): boolean {
     if (!stdinIsTTY) return true;
     return argv.includes("-p") || argv.includes("--print");
+}
+
+// --- Stuck-prompt watcher -----------------------------------------------------
+
+/** Last-line shapes of a command waiting for someone to type an answer. Slow but busy commands never match. */
+const PROMPT_SHAPES = [
+    /\(y\/n\)/i,
+    /\[y\/n\]/i,
+    /\(yes\/no\)/i,
+    /\b(?:do you|would you|shall i|are you sure|ready to)\b.*\?\s*$/i,
+    /press (?:any key|enter)/i,
+    /continue\?/i,
+    /overwrite\?/i,
+];
+
+/** Whether the last line of this output looks like an interactive prompt. */
+export function looksLikePrompt(tail: string): boolean {
+    const last = tail.trimEnd().split("\n").pop() ?? "";
+    return PROMPT_SHAPES.some((p) => p.test(last));
+}
+
+/**
+ * Watch a background job's log: once it has not grown for `afterMs`, read its tail; if the last line looks like
+ * a prompt, report it once and stop watching. A quiet command that is not at a prompt is looked at again only
+ * after another `afterMs`.
+ */
+export function watchStall(
+    job: BgJob,
+    onStall: (tail: string) => void,
+    checkMs = STALL_CHECK_MS,
+    afterMs = STALL_AFTER_MS
+): () => void {
+    let lastSize = -1;
+    let lastGrowth = Date.now();
+    const timer = setInterval(() => {
+        let size: number;
+        try {
+            size = statSync(job.logPath).size;
+        } catch {
+            return;
+        }
+        if (size !== lastSize) {
+            lastSize = size;
+            lastGrowth = Date.now();
+            return;
+        }
+        if (Date.now() - lastGrowth < afterMs) return;
+        const tail = readBoundedTail(job.logPath, STALL_TAIL_BYTES);
+        if (!looksLikePrompt(tail)) {
+            lastGrowth = Date.now();
+            return;
+        }
+        clearInterval(timer);
+        onStall(tail);
+    }, checkMs);
+    timer.unref();
+    return () => clearInterval(timer);
 }

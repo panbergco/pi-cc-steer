@@ -140,10 +140,9 @@ export default function (pi: ExtensionAPI) {
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
 		pending = pending.filter((p) => p.how === "prompt");
 		const sending = queue.length > 0 && ctx.isIdle();
-		// Finish notices that arrived during the run: they ride in the next message when one is coming (after it,
-		// as in Claude Code), and wait for the person after an interruption; otherwise one starts a turn.
-		const waiting = background?.deliverHeld(sending || interrupted || !ctx.isIdle()) ?? 0;
-		if (waiting > 0) ctx.ui.notify(`${waiting} background notice(s) will go in with your next message`, "info");
+		// Background finish notices not yet delivered: they ride in the next prompt when one is coming (after it,
+		// as in Claude Code); otherwise they start a turn once pi has fully stopped.
+		background?.deliverHeld(sending || interrupted || !ctx.isIdle(), !ctx.hasPendingMessages());
 		if (!sending) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});
@@ -211,12 +210,25 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", (event, ctx) => {
-		if (queue.length === 0) return;
 		// Send-now in progress: the run is being cancelled, so anything sent into it now would be cancelled too.
 		if (sendNow) return; // settle() sends the queue once the run has stopped
 		const stop = (event.message as { stopReason?: string }).stopReason;
 		// An aborted TOOL ends the turn as "toolUse", not "aborted" (measured 2026-09-25): check the signal too.
-		if (stop === "aborted" || ctx.signal?.aborted) {
+		const aborted = stop === "aborted" || Boolean(ctx.signal?.aborted);
+		const flushed = !aborted && queue.length > 0 && (stop === "toolUse" || stop === "stop");
+		deliverMessages(event, ctx, stop, aborted);
+		// Background finish notices go in at this boundary too, after the person's messages (Claude Code's 'next').
+		if (!aborted && (stop === "toolUse" || flushed)) background?.deliverMidRun();
+	});
+
+	const deliverMessages = (
+		event: { toolResults: unknown[] },
+		ctx: ExtensionContext,
+		stop: string | undefined,
+		aborted: boolean,
+	) => {
+		if (queue.length === 0) return;
+		if (aborted) {
 			// Interrupted some other way: give the person their text back rather than sending it, as pi does.
 			const { text, droppedImages } = popAll(queue, ctx.ui.getEditorText());
 			queue = [];
@@ -233,7 +245,7 @@ export default function (pi: ExtensionAPI) {
 		if (stop !== "toolUse" && stop !== "stop") return; // error or length: pi decides retry first
 		// Tool results in this turn → the agent is mid-task: frame it. Otherwise it is a fresh prompt.
 		flush(ctx, "steer", event.toolResults.length > 0 ? "mid-turn" : undefined);
-	});
+	};
 
 	// Anything still queued once pi has fully settled (after an interrupt, retries, compaction) starts the next turn.
 	pi.on("agent_settled", (_event, ctx) => settle(ctx));

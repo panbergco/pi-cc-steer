@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +10,8 @@ import {
     statusFromExit,
     startBackgroundJob,
     terminateJobSilently,
+    looksLikePrompt,
+    watchStall,
 } from "../lifecycle.ts";
 import { add, BgRegistry, createRunningJob, newJobId } from "../registry.ts";
 import { killWithGrace, processExists, spawnWithFileOutput } from "../spawn.ts";
@@ -209,5 +212,38 @@ void describe("startBackgroundJob — exit → completeJob", () => {
         } finally {
             rmSync(dir, { recursive: true, force: true });
         }
+    });
+});
+
+void describe("stuck-prompt watcher", () => {
+    void it("recognises interactive prompts on the last line, and not a merely slow command", () => {
+        for (const line of ["Overwrite existing config? (y/n) ", "Proceed [Y/n]", "Do you want to continue?", "Press any key to continue", "Are you sure you want to delete it? "]) {
+            assert.equal(looksLikePrompt(`building...\n${line}`), true, line);
+        }
+        for (const line of ["compiling 312 files", "Waiting for server on :8080", "done? not yet — step 3 of 9 running"]) {
+            assert.equal(looksLikePrompt(`x\n${line}`), false, line);
+        }
+        assert.equal(looksLikePrompt("Continue? (y/n)\nnow downloading 40%"), false, "only the last line counts");
+    });
+
+    void it("reports a quiet command sitting at a prompt once, and stays silent for a quiet command that is not", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "stall-"));
+        const run = async (cmd: string) => {
+            const logPath = join(dir, `${Math.random()}.log`);
+            const out = openSync(logPath, "w");
+            const child = spawn("bash", ["-c", cmd], { stdio: ["ignore", out, out], detached: true });
+            closeSync(out);
+            const seen: string[] = [];
+            const stop = watchStall({ logPath } as never, (tail) => seen.push(tail), 50, 300);
+            await new Promise((r) => setTimeout(r, 900));
+            stop();
+            try { process.kill(-child.pid!, "SIGKILL"); } catch { /* gone */ }
+            return seen;
+        };
+        const prompt = await run("printf 'Overwrite existing file? (y/n) '; sleep 30");
+        assert.equal(prompt.length, 1, "told once");
+        assert.match(prompt[0], /Overwrite existing file\? \(y\/n\)/);
+        assert.deepEqual(await run("echo building; sleep 30"), [], "slow is not stuck");
+        rmSync(dir, { recursive: true, force: true });
     });
 });
