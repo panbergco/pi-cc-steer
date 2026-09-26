@@ -92,6 +92,9 @@ export default function (pi: ExtensionAPI) {
 		queue = [];
 		pending.push({ text: batchKey(batch.map((q) => q.text)), kind, how, images: batch.some((q) => q.images.length > 0), settles: 0 });
 		const content = batchContent(batch) as Parameters<ExtensionAPI["sendUserMessage"]>[0];
+		// A prompt of the person's (send-now, or messages typed after the last turn): no notice turn may start before
+		// it, or pi would reject it; its notices ride in it.
+		if (how === "prompt") background?.promptSubmitted();
 		// pi reports nothing back; if it refuses the prompt (no model, no key) it shows its own error.
 		pi.sendUserMessage(content, how === "steer" ? { deliverAs: "steer" } : undefined);
 		render(ctx);

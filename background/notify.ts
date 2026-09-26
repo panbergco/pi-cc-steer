@@ -132,7 +132,7 @@ export function deliverNotice(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessa
         reg.held.push(notice);
         return;
     }
-    if (!reg.startsTurns || reg.submitting) {
+    if (!reg.startsTurns || reg.submitting || reg.personPending()) {
         reg.waiting.push(notice); // the next prompt carries it
         return;
     }

@@ -130,3 +130,36 @@ test("after a send-now, the notice rides after the person's message in the same 
 	const r = await h.handlers.before_agent_start({ prompt: "now do X" }, h.ctx);
 	assert.match(r.message.content, /<task-notification>/);
 });
+
+test("Enter in the editor while pi is idle holds a finish notice for that prompt instead of starting a turn", async () => {
+	const h = await setup();
+	h.ctx.mode = "tui";
+	let factory: any;
+	h.ctx.ui.setEditorComponent = (f: unknown) => (factory = f);
+	h.ctx.ui.getEditorComponent = () => () => ({ handleInput() {} });
+	await h.handlers.session_start({}, h.ctx);
+	await sleep(10); // the editor is installed after other extensions' session_start
+	const keybindings = { matches: (data: string, id: string) => id === "tui.input.submit" && data === "\r" };
+	const editor = factory({}, {}, keybindings);
+	h.state.idle = true;
+	h.state.editor = "hello";
+	editor.handleInput("\r"); // the person submits; another extension may still be processing it
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 0, "no turn that would reject the person's prompt");
+	const r = await h.handlers.before_agent_start({ prompt: "hello" }, h.ctx);
+	assert.match(r.message.content, /<task-notification>/, "the notice rides in that prompt");
+});
+
+test("while pi-cc-steer's own prompt (send-now, or messages typed after the last turn) is on its way, a finished job does not start a turn", async () => {
+	const h = await setup();
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx); // the queue goes out as a prompt; another extension may still hold it
+	assert.deepEqual(h.sent, [[{ type: "text", text: "PERSON" }]]);
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 0, "no turn that would reject the person's prompt");
+	const r = await h.handlers.before_agent_start({ prompt: "PERSON" }, h.ctx);
+	assert.match(r.message.content, /<task-notification>/, "the notice rides in it");
+});

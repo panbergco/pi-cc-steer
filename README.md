@@ -172,11 +172,20 @@ The small differences that remain:
   "Operation aborted" shows just the note.
 - **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
-- **Notice turns and other extensions.** A finish notice starts a turn when pi is idle. pi has no "prompt being
-  prepared" state, so pi-cc-steer watches for Enter in the editor: anything you submit there, including commands such
-  as `/new`, holds notice turns until it starts, and the notices then ride in it. A prompt that does *not* come from
-  the editor (another extension's own prompt) while a third extension's input handler is slow can still collide, and
-  pi then rejects it with "Agent is already processing". In RPC, print or SDK use notices never start turns.
+- **Notice turns and other extensions.** In the TUI a finish notice starts a turn when pi is idle. pi has no
+  "prompt being prepared" or "session ending" state an extension can see, so pi-cc-steer uses what it can: Enter in
+  the editor (including commands such as `/new`) and its own send-now and queued prompts hold notice turns until that
+  prompt starts (at most 60 s), and the notices ride in it. What remains needs *another* extension that is slow at
+  the wrong moment:
+  - a prompt that does not come from the editor or pi-cc-steer, while a third extension's input handler is slow, can
+    be rejected by pi with "Agent is already processing";
+  - a user message from another extension arriving while your queued batch is still being processed can be taken
+    for your batch, letting a notice go in ahead of it;
+  - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
+  - after a cancelled session switch, notices wait until your next message instead of starting a turn;
+  - after Esc returns a batch of yours to the editor, notices wait for what you send next.
+
+  In RPC, print or SDK use notices never start turns; they ride in the host's next prompt.
 - **Notices behind other extensions' steering messages.** pi hands the model one steering message per request by
   default. If another extension has queued its own, a notice waits behind it, and a message you queue after that
   waits one request longer.

@@ -146,13 +146,13 @@ export function registerBackground(pi: ExtensionAPI): Background {
         promptSubmitted: () => {
             reg.submitting = true;
             cancelPendingStart();
-            // A submission that never starts a run (a command, a rejected prompt): stop holding after 10 s and
+            // A submission that never starts a run (a command, a rejected prompt): stop holding after 60 s and
             // let waiting notices start their turn.
             if (submitGuard) clearTimeout(submitGuard);
             submitGuard = setTimeout(() => {
                 endSubmitting();
                 deliverHeld(reg, pi, false);
-            }, 10_000);
+            }, 60_000);
             submitGuard.unref?.();
         },
     };
