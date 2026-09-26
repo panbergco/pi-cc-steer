@@ -184,16 +184,23 @@ The small differences that remain:
     ride in your next prompt;
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
   - after a cancelled session switch, notices wait for your next message instead of starting a turn;
+  - with another extension slow over your input: two messages submitted close together can let a notice go in
+    between them; a slash command completed from a partial name (`/a` → `/ask`) is held for 5 s only; an Esc while a
+    batch of yours is still inside that extension, with a draft that starts with the same text, can let a notice
+    go ahead of it;
   - a prompt template or skill that another extension takes longer than it takes a command to handle is fine (held
     until it starts), but a real command (`/model`, `/new`, …) is held for 5 s only.
+- **Notices that wait for your next message.** Without any other extension involved, a finish notice can wait for
+  your next message instead of waking the model: after Esc returns a prompt template you queued during a run to the
+  editor, and after Enter fills in a file suggestion inside a prompt template (`/ask @fi…`).
 - **The stuck-prompt warning is a guess.** A background command whose output stops on a line that looks like a
   prompt (for example `printf 'Press Enter submits form'; sleep 60`) is flagged although it is not waiting for input.
   Claude Code has the same limitation.
 
   In RPC, print or SDK use notices never start turns; they ride in the host's next prompt.
 - **Notices and other extensions' steering messages.** A notice is not handed to pi at a tool boundary where pi
-  already has messages queued. One that another extension queues in the same boundary, after pi-cc-steer, can still
-  end up just ahead of a notice.
+  already has messages queued. If another extension queues a steering message in the same boundary, after
+  pi-cc-steer, the order is notice, then that message, then anything you send next.
 - **Nothing is persisted.** Queued messages, and finish notices not yet delivered, live in memory, as pi's own queue does: `/reload`, exit or
   switching sessions drops them. If pi refuses the queued prompt (no model, no API key), pi shows its error and the
   text is not put back.
