@@ -142,7 +142,7 @@ export default function (pi: ExtensionAPI) {
 		const sending = queue.length > 0 && ctx.isIdle();
 		// Background finish notices not yet delivered: they ride in the next prompt when one is coming (after it,
 		// as in Claude Code); otherwise they start a turn once pi has fully stopped.
-		background?.deliverHeld(sending || interrupted || !ctx.isIdle(), !ctx.hasPendingMessages());
+		background?.deliverHeld(sending || interrupted || !ctx.isIdle());
 		if (!sending) return render(ctx);
 		// A session entry, not a message: shown in the transcript, never sent to a model (compaction included).
 		if (interrupted) pi.appendEntry(MARK, {});
@@ -217,8 +217,10 @@ export default function (pi: ExtensionAPI) {
 		const aborted = stop === "aborted" || Boolean(ctx.signal?.aborted);
 		const flushed = !aborted && queue.length > 0 && (stop === "toolUse" || stop === "stop");
 		deliverMessages(event, ctx, stop, aborted);
-		// Background finish notices go in at this boundary too, after the person's messages (Claude Code's 'next').
-		if (!aborted && (stop === "toolUse" || flushed)) background?.deliverMidRun();
+		// Background finish notices go in at a tool boundary (Claude Code's 'next') — but not at one where the
+		// person's own messages were just queued: pi finishes queuing those asynchronously, so a notice sent now
+		// would overtake them. They go at the next boundary, or when the run ends.
+		if (!aborted && stop === "toolUse" && !flushed) background?.deliverMidRun();
 	});
 
 	const deliverMessages = (
@@ -300,11 +302,13 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("context", (event) => {
 		// Left out of the model's view: a cut-off reply with nothing left, which no provider accepts (pi leaves
-		// aborted replies out natively too), and "Interrupted" markers that 0.1.4 stored as custom messages.
+		// aborted replies out natively too), "Interrupted" markers that 0.1.4 stored as custom messages, and a
+		// background notice that arrived a second time.
 		const msgs = (event.messages as Array<Record<string, unknown>>).filter(
 			(m) =>
 				!(m[CUT] && Array.isArray(m.content) && m.content.length === 0) &&
-				!(m.role === "custom" && m.customType === MARK),
+				!(m.role === "custom" && m.customType === MARK) &&
+				!(m.role === "custom" && (m.details as { duplicate?: boolean } | undefined)?.duplicate),
 		);
 		const out = frameMidTurn(msgs as never[], framings);
 		if (out === (msgs as never[]) && msgs.length === event.messages.length) return;

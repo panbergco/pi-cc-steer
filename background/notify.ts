@@ -124,12 +124,16 @@ function makeNotice(reg: BgRegistry, content: string, details: Notice["details"]
 /**
  * Hand a notice on, the way Claude Code does:
  * - pi idle: it starts a turn now;
- * - pi busy: it is held here, and goes in at the next tool boundary after the person's own queued messages
- *   (deliverMidRun), or once the run ends (deliverHeld).
+ * - pi busy (running, or a run just ending): it is held here, and goes in at the next tool boundary after the
+ *   person's own queued messages (deliverMidRun), or once the run ends (deliverHeld).
  */
 export function deliverNotice(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notice: Notice): void {
-    if (reg.agentRunning) {
+    if (reg.ending || !reg.isIdle()) {
         reg.held.push(notice);
+        return;
+    }
+    if (!reg.startsTurns) {
+        reg.waiting.push(notice); // the host's next prompt carries it
         return;
     }
     startTurnWith(reg, pi, [notice]);
@@ -198,44 +202,52 @@ export function sendNotice(
 }
 
 /**
- * A tool boundary where the run goes on: notices go in now, as steering messages queued after the person's own
- * (pi keeps them in order). A copy stays "in flight" until pi shows it arrived, because an abort can clear pi's
- * queue (see deliverHeld).
+ * A tool boundary where the run goes on: notices go in now, as steering messages. pi-cc-steer does not call this
+ * at a boundary where it has just queued the person's own messages, so those always go first.
  */
 export function deliverMidRun(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
-    for (const n of [...reg.waiting.splice(0), ...reg.held.splice(0)]) {
-        reg.inFlight.set(n.id, n);
-        sendNotice(pi, n, { deliverAs: "steer" });
-    }
+    for (const n of [...reg.waiting.splice(0), ...reg.held.splice(0)]) send(reg, pi, n, { deliverAs: "steer" });
 }
 
-/** pi delivered a notice into the conversation. */
-export function noticeArrived(reg: BgRegistry, noticeId: string | undefined): void {
-    if (noticeId) reg.inFlight.delete(noticeId);
+/** Hand a notice to pi and keep a copy until it arrives (an abort can clear pi's queue). */
+function send(
+    reg: BgRegistry,
+    pi: Pick<ExtensionAPI, "sendMessage">,
+    n: Notice,
+    options: { deliverAs?: "steer" | "nextTurn"; triggerTurn?: boolean }
+): void {
+    reg.inFlight.set(n.id, n);
+    sendNotice(pi, n, options);
+}
+
+/** pi delivered a notice into the conversation. Returns true when it had already arrived: a duplicate. */
+export function noticeArrived(reg: BgRegistry, noticeId: string | undefined): boolean {
+    if (!noticeId) return false;
+    reg.inFlight.delete(noticeId);
+    if (reg.arrived.has(noticeId)) return true;
+    reg.arrived.add(noticeId);
+    return false;
 }
 
 /**
- * The run has ended. Notices held during it, waiting from before, or sent but wiped from pi's queue by an abort
- * (pi's queue is empty yet they never arrived) are delivered:
- * - a prompt is about to start (the person's queued message, or another run): they ride in it, after the prompt;
- * - otherwise they start one turn, just after pi has finished stopping — as Claude Code wakes the model when a
- *   background command finishes, including after an Esc — without holding up the stop itself.
+ * The run has ended. Everything not yet in the conversation — held during the run, waiting from before, or
+ * handed to pi but never arrived (an abort may have cleared pi's queue; if it did not, the second copy is hidden
+ * on arrival) — is delivered:
+ * - a prompt is about to start (the person's queued message, or another run): it rides in it, after the prompt;
+ * - otherwise it starts one turn just after pi has finished stopping, as Claude Code wakes the model when a
+ *   background command finishes (including after an Esc), without holding up the stop itself. Any prompt, run,
+ *   session switch or shutdown in between cancels that.
  */
-export function deliverHeld(
-    reg: BgRegistry,
-    pi: Pick<ExtensionAPI, "sendMessage">,
-    withNextMessage: boolean,
-    piQueueEmpty: boolean
-): void {
-    reg.waiting.push(...reg.held.splice(0));
-    if (piQueueEmpty) {
-        reg.waiting.push(...reg.inFlight.values());
-        reg.inFlight.clear();
-    }
-    if (reg.waiting.length === 0 || withNextMessage) return;
+export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, withNextMessage: boolean): void {
+    reg.ending = false;
+    reg.waiting.push(...reg.held.splice(0), ...reg.inFlight.values());
+    reg.inFlight.clear();
+    if (reg.waiting.length === 0 || withNextMessage || !reg.startsTurns) return;
+    const generation = reg.generation;
     setTimeout(() => {
         try {
-            if (!reg.agentRunning && reg.waiting.length > 0) startTurnWith(reg, pi, []);
+            if (reg.generation !== generation || !reg.isIdle() || reg.waiting.length === 0) return;
+            startTurnWith(reg, pi, []);
         } catch {
             // session replaced meanwhile: its notices went with it
         }
@@ -245,7 +257,7 @@ export function deliverHeld(
 /** Start one turn carrying every waiting notice and these; only the last one triggers the turn. */
 export function startTurnWith(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notices: Notice[]): void {
     const all = [...reg.waiting.splice(0), ...notices];
-    all.forEach((n, i) => sendNotice(pi, n, i === all.length - 1 ? DELIVER_NOTICE : {}));
+    all.forEach((n, i) => send(reg, pi, n, i === all.length - 1 ? DELIVER_NOTICE : {}));
 }
 
 /**
@@ -255,8 +267,9 @@ export function startTurnWith(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessa
 export function takeWaiting(reg: BgRegistry):
     | { customType: string; content: string; display: boolean; details: unknown }
     | undefined {
-    const waiting = reg.waiting.splice(0);
+    const waiting = reg.waiting.splice(0).filter((n) => !reg.arrived.has(n.id));
     if (waiting.length === 0) return undefined;
+    for (const n of waiting) reg.arrived.add(n.id);
     const details = waiting.map((n) => n.details);
     const worst =
         details.find((d) => d.status === "failed")?.status ?? details.find((d) => d.status !== "completed")?.status ?? "completed";

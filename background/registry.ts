@@ -39,12 +39,23 @@ export class BgRegistry {
 
     nonInteractive = false;
 
-    /** pi is running (between agent_start and agent_settled). */
-    agentRunning = false;
-    /** Notices that arrived mid-run, not yet handed to pi. */
+    /** pi's own idle check, from the session context. Before a session starts nothing can be running. */
+    isIdle: () => boolean = () => true;
+    /** Whether a notice may start a turn by itself. Only in the interactive TUI, as in Claude Code: there a
+     *  message typed during a run is queued. An RPC, print or SDK host drives the turns itself and would have its
+     *  next prompt rejected by a turn it did not start; there notices ride in the host's next prompt. */
+    startsTurns = true;
+    /** A run has ended and its notices have not been handed on yet (agent_end → deliverHeld). */
+    ending = false;
+    /** Bumped by anything that should cancel a pending "start a turn for these notices": a prompt, a run
+     *  starting, a session switch or shutdown. */
+    generation = 0;
+    /** Notices that arrived while pi was busy, not yet handed to pi. */
     held: Notice[] = [];
-    /** Notices handed to pi mid-run, until pi shows they arrived. */
+    /** Notices handed to pi, until pi shows they arrived. */
     inFlight = new Map<string, Notice>();
+    /** Notices that have arrived in the conversation (a second arrival is a duplicate and is hidden). */
+    arrived = new Set<string>();
     /** Notices waiting for the next prompt or turn. */
     waiting: Notice[] = [];
     noticeSeq = 0;

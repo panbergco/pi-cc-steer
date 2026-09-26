@@ -224,6 +224,8 @@ void describe("stuck-prompt watcher", () => {
             assert.equal(looksLikePrompt(`x\n${line}`), false, line);
         }
         assert.equal(looksLikePrompt("Continue? (y/n)\nnow downloading 40%"), false, "only the last line counts");
+        assert.equal(looksLikePrompt("test case: Press Enter submits form\n"), false, "a finished line only mentions it");
+        assert.equal(looksLikePrompt("Overwrite? (y/n) \n\n"), false, "output that moved on to new lines is not waiting");
     });
 
     void it("reports a quiet command sitting at a prompt once, and stays silent for a quiet command that is not", async () => {

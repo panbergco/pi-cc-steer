@@ -93,15 +93,6 @@ async function finishJobMidRun(h: Awaited<ReturnType<typeof setup>>) {
 	assert.equal(h.notices.length, 0, "held while pi runs");
 }
 
-test("a finish notice goes in at the next tool boundary, after the message the person queued", async () => {
-	const h = await setup();
-	await finishJobMidRun(h);
-	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "fix it" }, h.ctx);
-	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
-	assert.deepEqual(h.order, ["message", "notice"], "the person's message first, as in Claude Code");
-	assert.deepEqual(h.notices.map((n) => n.opts), [{ deliverAs: "steer" }]);
-});
-
 test("a finish notice pending when the run ends starts a turn once pi has stopped (Claude Code wakes the model)", async () => {
 	for (const stop of ["stop", "error", "aborted"]) {
 		const h = await setup();
@@ -112,22 +103,6 @@ test("a finish notice pending when the run ends starts a turn once pi has stoppe
 		assert.equal(h.notices.length, 0, `${stop}: not inside the stop`);
 		await tick();
 		assert.deepEqual(h.notices.map((n) => n.opts), [{ triggerTurn: true }], `${stop}: one turn`);
-	}
-});
-
-test("an abort that wipes pi's queue does not lose a notice already handed over, and one that keeps it does not repeat it", async () => {
-	for (const [piQueue, expected] of [[0, 2], [1, 1]] as const) {
-		const h = await setup();
-		await finishJobMidRun(h);
-		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
-		assert.equal(h.notices.length, 1, "handed over at the boundary");
-		h.ctx.signal.aborted = true;
-		await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
-		h.state.idle = true;
-		h.state.piQueue = piQueue;
-		await h.handlers.agent_settled({}, h.ctx);
-		await tick();
-		assert.equal(h.notices.length, expected);
 	}
 });
 

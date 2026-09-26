@@ -107,8 +107,8 @@ Modelled on Claude Code's background bash:
 | A command is still running after 2 s | A hint appears under the editor: `(ctrl+b to run in background)` (`ctrl+b ctrl+b` inside tmux, where Ctrl+B is the prefix). |
 | **Ctrl+B** (or Ctrl+Shift+B, or `/bg`) while it runs | The command keeps running with its output going to a log file. The model is told it was backgrounded and carries on; messages you queued go in at that point. With nothing running, Ctrl+B is still cursor-left. |
 | The command reaches its timeout (120 s by default) | It moves to the background instead of being killed. |
-| A background command finishes | The model gets one notice with its status, exit code, output tail and log path, as in Claude Code: at the next tool boundary if pi is busy (always after messages you queued), or as a new turn if pi is idle — including just after an Esc, once pi has stopped. If your message is about to start the next run, the notice goes in with it, after it. A notice cleared from pi's queue by an interruption is delivered again; one that survived it is not repeated. |
-| A background command goes quiet at what looks like a prompt | After 45 s without new output, if its last line looks like `(y/n)`, `[Y/n]`, `Press any key`, `Continue?`, `Overwrite?` or a "Do you…?" question, the model is told once, with the last output and how to re-run it non-interactively (Claude Code's rule). |
+| A background command finishes | The model gets one notice with its status, exit code, output tail and log path, as in Claude Code: at the next tool boundary if pi is busy (never ahead of messages you queued — at a boundary where yours go in, the notice waits for the next one), or as a new turn if pi is idle, including just after an Esc once pi has stopped. If your message is about to start the next run, the notice goes in with it, after it. A notice an interruption wipes from pi's queue is sent again, and a copy that reaches the model twice is hidden the second time. In RPC, print or SDK use a notice never starts a turn by itself (the host drives the turns); it goes in with the host's next prompt. |
+| A background command goes quiet at what looks like a prompt | After 45 s without new output, if the output stops on a line that looks like `(y/n)`, `[Y/n]`, `Press any key`, `Continue?`, `Overwrite?` or a "Do you…?" question, the model is told once, with the last output and how to re-run it non-interactively. This is Claude Code's rule, except that a line ending in a newline does not count (a prompt leaves the cursor on its line), so output that merely mentions "Press Enter" is not mistaken for one. It is still a guess: a quiet command whose last line happens to look like a prompt can be flagged. |
 | Esc, or a send-now, while a command runs in the foreground | The command and everything it started are stopped at once, as pi's own bash does. |
 | You type a message while a command runs | It waits for the command, as in Claude Code; press Ctrl+B to move on sooner. |
 
@@ -213,7 +213,7 @@ the framing of an earlier batch still applies to every request that carries it.
 ## Development
 
 ```bash
-npm install && npm test    # steer.test.ts, index.test.ts, and background/test (the background engine)
+npm install && npm test    # unit tests, plus integration.test.ts: real pi sessions with a scripted model
 pi -e ./index.ts           # try it in one session without installing
 ```
 

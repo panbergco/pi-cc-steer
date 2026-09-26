@@ -288,9 +288,13 @@ const PROMPT_SHAPES = [
     /overwrite\?/i,
 ];
 
-/** Whether the last line of this output looks like an interactive prompt. */
+/**
+ * Whether this output ends at what looks like an interactive prompt: a prompt-shaped last line that the output
+ * stops on (a prompt leaves the cursor waiting on its line; a line that ends in a newline is only output that
+ * happens to mention "Press Enter" or "(y/n)").
+ */
 export function looksLikePrompt(tail: string): boolean {
-    const last = tail.trimEnd().split("\n").pop() ?? "";
+    const last = tail.split("\n").pop() ?? ""; // "" when the output ends with a newline: not waiting on a line
     return PROMPT_SHAPES.some((p) => p.test(last));
 }
 
@@ -314,7 +318,7 @@ export function watchStall(
         } catch {
             return;
         }
-        if (size !== lastSize) {
+        if (size > lastSize) {
             lastSize = size;
             lastGrowth = Date.now();
             return;

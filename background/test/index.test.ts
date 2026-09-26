@@ -210,7 +210,7 @@ void describe("typing while a command runs", () => {
     void it("a message typed mid-command does not background it: the command runs to the end (Claude Code's default)", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, {});
-        assert.equal(h.handlers.has("input"), false, "nothing reacts to typing");
+        await h.handlers.get("input")!({ source: "interactive", streamingBehavior: "steer", text: "hurry" } as never, uiCtx);
         const pending = h.tools.get("bash")!.execute("tc-30", { command: "sleep 3; echo still-foreground" }, undefined, undefined, uiCtx);
         const res = await pending;
         assert.ok(res.content[0].text.includes("still-foreground"), `ran in the foreground, got: ${res.content[0].text}`);
@@ -309,14 +309,17 @@ void describe("cancelling and failures (regressions)", () => {
     void it("a job that finishes mid-run is held, then delivered once when the run ends", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, {});
-        await h.handlers.get("agent_start")!({}, uiCtx);
+        await h.handlers.get("session_start")!({}, { isIdle: () => false });
         await h.tools.get("bash")!.execute("tc-43", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
         await sleep(400);
         const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
         assert.equal(notices(), 0, "held while the run is going");
-        await h.handlers.get("agent_settled")!({}, uiCtx);
-        h.bg.deliverHeld(false, true);
-        h.bg.deliverHeld(false, true);
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        h.bg.deliverHeld(false);
+        await sleep(20);
+        const sent = h.messages.find((m) => m.customType === EVENT.taskNotification) as { details?: unknown } | undefined;
+        await h.handlers.get("message_end")!({ message: { role: "custom", customType: EVENT.taskNotification, details: sent?.details } } as never, uiCtx);
+        h.bg.deliverHeld(false);
         await sleep(20);
         assert.equal(notices(), 1, "delivered once when the run ends");
     });

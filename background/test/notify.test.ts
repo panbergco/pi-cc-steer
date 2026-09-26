@@ -146,7 +146,7 @@ const note = (id: string, status = "completed") => ({ id, content: id, details: 
 void describe("notices that finish mid-run", () => {
     void it("are held, not put in pi's queue, while pi runs", () => {
         const { reg, pi, messages } = harness();
-        reg.agentRunning = true;
+        reg.isIdle = () => false;
         const job = mkJob({ id: "bash-held0001", logPath: "/nope.log" });
         add(reg, job);
         assert.equal(sendTaskNotification({ reg, pi: pi as never, job }), true);
@@ -161,14 +161,15 @@ void describe("notices that finish mid-run", () => {
         assert.deepEqual(deliverOptions, [{ deliverAs: "steer" }]);
         assert.equal(messages.length, 1);
         assert.equal(reg.inFlight.size, 1);
-        noticeArrived(reg, "a");
+        assert.equal(noticeArrived(reg, "a"), false, "first arrival");
         assert.equal(reg.inFlight.size, 0);
+        assert.equal(noticeArrived(reg, "a"), true, "a second arrival is a duplicate");
     });
 
     void it("ride in the next prompt, as one message after it, when a prompt is coming", () => {
         const { reg, pi, messages } = harness();
         reg.held = [note("a"), note("b", "failed")];
-        deliverHeld(reg, pi as never, true, true);
+        deliverHeld(reg, pi as never, true);
         assert.equal(messages.length, 0, "nothing handed to pi yet");
         const m = takeWaiting(reg)!;
         assert.equal(m.content, "a\n\nb");
@@ -179,24 +180,33 @@ void describe("notices that finish mid-run", () => {
     void it("otherwise start one turn just after the stop, never inside it", async () => {
         const { reg, pi, messages, deliverOptions } = harness();
         reg.held = [note("a"), note("b"), note("c")];
-        deliverHeld(reg, pi as never, false, true);
+        deliverHeld(reg, pi as never, false);
         assert.equal(messages.length, 0, "not while pi is still stopping");
         await tick();
         assert.deepEqual(deliverOptions, [{}, {}, { triggerTurn: true }], "one turn, carrying all three");
-        deliverHeld(reg, pi as never, false, true);
+        for (const id of ["a", "b", "c"]) noticeArrived(reg, id);
+        deliverHeld(reg, pi as never, false);
         await tick();
         assert.equal(messages.length, 3, "delivered once");
     });
 
-    void it("a notice an abort wiped from pi's queue is delivered again; one still in pi's queue is not", async () => {
-        for (const [piQueueEmpty, expected] of [[true, 2], [false, 1]] as const) {
-            const { reg, pi, messages } = harness();
-            reg.held = [note("a")];
-            deliverMidRun(reg, pi as never); // sent, never seen arriving
-            deliverHeld(reg, pi as never, false, piQueueEmpty);
-            await tick();
-            assert.equal(messages.length, expected, piQueueEmpty ? "re-sent" : "left to pi");
-        }
+    void it("a notice handed over but never seen arriving is sent again when the run ends", async () => {
+        const { reg, pi, messages } = harness();
+        reg.held = [note("a")];
+        deliverMidRun(reg, pi as never); // an abort then cleared pi's queue
+        deliverHeld(reg, pi as never, false);
+        await tick();
+        assert.equal(messages.length, 2, "re-sent; if pi still had the first copy, the second arrival is hidden");
+    });
+
+    void it("a prompt or a run starting in between cancels the pending turn; the notices then ride in that prompt", async () => {
+        const { reg, pi, messages } = harness();
+        reg.held = [note("a")];
+        deliverHeld(reg, pi as never, false);
+        reg.generation++; // e.g. the person submitted a prompt
+        await tick();
+        assert.equal(messages.length, 0, "no turn of its own");
+        assert.equal(takeWaiting(reg)?.content, "a");
     });
 
     void it("a notice that arrived is not sent again", async () => {
@@ -204,7 +214,7 @@ void describe("notices that finish mid-run", () => {
         reg.held = [note("a")];
         deliverMidRun(reg, pi as never);
         noticeArrived(reg, "a");
-        deliverHeld(reg, pi as never, false, true);
+        deliverHeld(reg, pi as never, false);
         await tick();
         assert.equal(messages.length, 1);
     });
