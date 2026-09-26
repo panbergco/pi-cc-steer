@@ -294,7 +294,7 @@ test("a slow extension holding the person's message on its way in: notices still
 	s.done();
 });
 
-test("a batch another extension rewrote on its way in stops holding notices once it arrives", async () => {
+test("a batch another extension rewrote on its way in: the notice never goes ahead of it, and rides in the next prompt", async () => {
 	const rewrite = (pi: any) =>
 		pi.on("input", (e: { source: string; text: string }) =>
 			e.source === "extension" ? { action: "transform", text: `${e.text} (rewritten)` } : undefined,
@@ -306,6 +306,7 @@ test("a batch another extension rewrote on its way in stops holding notices once
 			bash("sleep 0.2; echo two"),
 			bash("sleep 0.2; echo three"),
 			fauxAssistantMessage("done"),
+			fauxAssistantMessage("next answered"),
 		],
 		"tui",
 		[rewrite],
@@ -314,11 +315,63 @@ test("a batch another extension rewrote on its way in stops holding notices once
 	await sleep(600);
 	await s.session.prompt("PERSON", { streamingBehavior: "steer" });
 	await run;
-	// flushed after "one", arrives rewritten with "two"'s request; the notice then goes at the next boundary,
-	// inside this run — not held back to a separate turn after it
-	assert.equal(s.contexts.length, 5, "no extra notice-only turn");
+	await sleep(100);
+	assert.equal(s.contexts.length, 5, "no notice-only turn after the run");
+	assert.equal(s.noticesIn(s.contexts.at(-1)), 0, "held back rather than risk going ahead of the rewritten batch");
+	await s.session.prompt("next");
 	const last = s.contexts.at(-1)!;
-	assert.equal(s.noticesIn(last), 1);
+	assert.equal(s.noticesIn(last), 1, "rides in the next prompt");
 	assert.ok(last.findIndex((m) => text(m).includes("PERSON")) < last.findIndex((m) => text(m).includes("<task-notification>")));
+	s.done();
+});
+
+test("a message typed during the run but held by a slow extension until the run ended still reaches the model", async () => {
+	const slowTyped = (pi: any) =>
+		pi.on("input", async (e: { source: string; streamingBehavior?: string }) => {
+			if (e.source === "interactive" && e.streamingBehavior) await sleep(700);
+			return undefined;
+		});
+	const s = await session([bash("sleep 0.4; echo one"), fauxAssistantMessage("done"), fauxAssistantMessage("got PERSON")], "tui", [
+		slowTyped,
+	]);
+	const run = s.session.prompt("go");
+	await sleep(150);
+	const typed = s.session.prompt("PERSON", { streamingBehavior: "steer" }); // typed while the command runs
+	await run;
+	await typed;
+	await sleep(200);
+	assert.ok(
+		s.contexts.some((c) => c.some((m) => text(m).includes("PERSON"))),
+		"not stranded in pi-cc-steer's queue after the run ended",
+	);
+	s.done();
+});
+
+test("a notice queued behind another extension's steering message, then an abort: the model sees it once", async () => {
+	let n = 0;
+	const other = (pi: any) =>
+		pi.on("turn_end", () => {
+			if (++n === 2) pi.sendMessage({ customType: "other", content: "OTHER", display: true }, { deliverAs: "steer" });
+		});
+	const s = await session(
+		[
+			bash("true", { run_in_background: true }),
+			bash("sleep 0.6; echo a"),
+			bash("sleep 5"),
+			fauxAssistantMessage("after"),
+			fauxAssistantMessage("next"),
+		],
+		"rpc",
+		[other],
+	);
+	let turns = 0;
+	s.session.subscribe((e: { type: string }) => {
+		if (e.type === "turn_end" && ++turns === 2) void s.session.abort(); // pi keeps the notice queued behind OTHER
+	});
+	await s.session.prompt("go").catch(() => {});
+	await sleep(300);
+	await s.session.prompt("next");
+	await sleep(100);
+	assert.equal(s.noticesIn(s.contexts.at(-1)), 1, "the copy pi kept and the re-sent one: the model sees one");
 	s.done();
 });

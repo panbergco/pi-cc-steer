@@ -174,16 +174,16 @@ The small differences that remain:
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
 - **Notice turns and other extensions.** In the TUI a finish notice starts a turn when pi is idle. pi has no
   "prompt being prepared" or "session ending" state an extension can see, so pi-cc-steer uses what it can: Enter in
-  the editor (including commands such as `/new`) and its own send-now and queued prompts hold notice turns until that
-  prompt starts (at most 60 s), and the notices ride in it. What remains needs *another* extension that is slow at
-  the wrong moment:
-  - a prompt that does not come from the editor or pi-cc-steer, while a third extension's input handler is slow, can
-    be rejected by pi with "Agent is already processing";
-  - a user message from another extension arriving while your queued batch is still being processed can be taken
-    for your batch, letting a notice go in ahead of it;
+  the editor, and its own send-now and queued prompts, hold notice turns until that prompt starts (a command such as
+  `/model`, which may never start one, for 5 s), and the notices ride in it. What remains:
+  - a prompt that comes neither from the editor nor from pi-cc-steer, while *another* extension's input handler is
+    slow, can be rejected by pi with "Agent is already processing";
+  - a message you submit that another extension swallows (it never starts a run) holds notice turns until your next
+    message;
+  - a batch of yours that another extension rewrites on its way in keeps notices back until the run ends; they then
+    ride in your next prompt;
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
-  - after a cancelled session switch, notices wait until your next message instead of starting a turn;
-  - after Esc returns a batch of yours to the editor, notices wait for what you send next.
+  - after a cancelled session switch, notices wait for your next message instead of starting a turn.
 
   In RPC, print or SDK use notices never start turns; they ride in the host's next prompt.
 - **Notices behind other extensions' steering messages.** pi hands the model one steering message per request by

@@ -143,6 +143,10 @@ export default function (pi: ExtensionAPI) {
 		sendNow = false;
 		// An undelivered steer went back to pi's own queue when the run ended: drop its record so it cannot claim a
 		// later identical message. A prompt may still be waiting its turn behind other queued prompts: keep it.
+		// pi's Esc puts queued messages that never reached the model back in the editor: a batch whose text is now
+		// there is not on its way any more.
+		const editorText = ctx.mode === "tui" ? ctx.ui.getEditorText() : "";
+		pending = pending.filter((p) => p.how !== "steer" || !editorText || !editorText.includes(p.text));
 		// A batch flushed during the run may still be on its way in (another extension's slow input handler): when
 		// it lands it starts the next run, so notices ride after it rather than starting a turn ahead of it.
 		const batchOnItsWay = pending.some((p) => p.how === "steer");
@@ -171,10 +175,12 @@ export default function (pi: ExtensionAPI) {
 				// Ctrl+B while a command runs moves it to the background, as in Claude Code; otherwise it is pi's
 				// cursor-left. Queued messages then go in at the tool boundary that this creates.
 				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
-				// Enter on something while pi is idle: it is about to become a prompt (or a command such as /new).
-				// Tell the engine now, before any extension processes it, so no notice turn starts in between.
-				if (keybindings.matches(data, "tui.input.submit") && ctx.isIdle() && ctx.ui.getEditorText().trim() !== "") {
-					background?.promptSubmitted();
+				// Enter on something: it is about to become a prompt, a queued message (which becomes a prompt if the run
+				// ends first) or a command such as /new. Tell the engine now, before any extension processes it, so no
+				// notice turn starts in between.
+				const submitted = ctx.ui.getEditorText().trim();
+				if (keybindings.matches(data, "tui.input.submit") && submitted !== "") {
+					background?.promptSubmitted(submitted.startsWith("/") ? "command" : undefined);
 				}
 				if (e.isShowingAutocomplete?.()) return handleInput(data);
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
@@ -219,7 +225,11 @@ export default function (pi: ExtensionAPI) {
 		if (event.source !== "interactive" || event.streamingBehavior !== "steer" || !isQueueable(event.text)) {
 			return { action: "continue" };
 		}
+		// Typed while pi was busy, but another extension held it until the run ended: queuing it now would strand
+		// it. Let pi take it — as a new prompt, or as its own queued message if a run has started meanwhile.
+		if (ctx.isIdle()) return { action: "continue" };
 		queue.push({ text: event.text, images: event.images ?? [] });
+		background?.submissionQueued();
 		render(ctx);
 		return { action: "handled" };
 	});
@@ -295,13 +305,10 @@ export default function (pi: ExtensionAPI) {
 			if (text === null) return;
 			// pi may append notes to a prompt that carries images, so for those the batch is the start of the text.
 			const i = pending.findIndex((p) => text === p.text || (p.images && text.startsWith(`${p.text}\n`)));
-			if (i === -1) {
-				// Not recognised: another extension may have rewritten a batch on its way in. It has arrived all the
-				// same, so it no longer holds notices back (the rewritten text is not framed).
-				const s = pending.findIndex((p) => p.how === "steer");
-				if (s !== -1) pending.splice(s, 1);
-				return;
-			}
+			// Not recognised: it may be a batch another extension rewrote, or another extension's own message. It is
+			// not taken as the batch's arrival (that could let a notice go ahead of the person's message); a rewritten
+			// batch keeps notices back until the run ends, and they then ride in the next prompt.
+			if (i === -1) return;
 			const [p] = pending.splice(i, 1);
 			if (p.kind && typeof m.timestamp === "number") {
 				framings.byId.set(messageId(m.timestamp, text), p.kind);

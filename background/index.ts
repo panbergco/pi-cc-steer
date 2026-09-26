@@ -37,9 +37,12 @@ export interface Background {
     deliverHeld(withNextMessage: boolean): void;
     /** Tell the engine how to see that the person's own messages are still on their way into pi. */
     setPersonPending(check: () => boolean): void;
-    /** The person pressed Enter on something in the TUI while pi was idle (pi-cc-steer's editor sees it before
-     *  any extension processes it): hold notice turns until that prompt's run starts. */
-    promptSubmitted(): void;
+    /** The person submitted something (pi-cc-steer's editor sees Enter before any extension processes it), or
+     *  pi-cc-steer sent a prompt of the person's: hold notice turns until a run starts. A slash command, which may
+     *  never start a run, is held for 5 s only. */
+    promptSubmitted(kind?: "command"): void;
+    /** The submission reached pi-cc-steer and was queued mid-run: it no longer needs the hold. */
+    submissionQueued(): void;
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -143,17 +146,22 @@ export function registerBackground(pi: ExtensionAPI): Background {
         setPersonPending: (check) => {
             reg.personPending = check;
         },
-        promptSubmitted: () => {
+        promptSubmitted: (kind) => {
             reg.submitting = true;
             cancelPendingStart();
-            // A submission that never starts a run (a command, a rejected prompt): stop holding after 60 s and
-            // let waiting notices start their turn.
             if (submitGuard) clearTimeout(submitGuard);
+            submitGuard = undefined;
+            // A message is held until its run starts, however long other extensions take over it: a notice turn
+            // started meanwhile would get it rejected. A command may never start a run, so it is held briefly.
+            if (kind !== "command") return;
             submitGuard = setTimeout(() => {
                 endSubmitting();
                 deliverHeld(reg, pi, false);
-            }, 60_000);
+            }, 5_000);
             submitGuard.unref?.();
+        },
+        submissionQueued: () => {
+            endSubmitting();
         },
     };
 }

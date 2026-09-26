@@ -163,3 +163,28 @@ test("while pi-cc-steer's own prompt (send-now, or messages typed after the last
 	const r = await h.handlers.before_agent_start({ prompt: "PERSON" }, h.ctx);
 	assert.match(r.message.content, /<task-notification>/, "the notice rides in it");
 });
+
+test("a job finishing while the person's batch is still on its way does not start a turn ahead of it", async () => {
+	const h = await setup();
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed, not yet arrived
+	h.state.idle = true; // e.g. pi went idle while another extension holds the batch
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 0, "waits for the person's batch");
+});
+
+test("a batch that Esc put back in the editor stops holding notices back", async () => {
+	const h = await setup();
+	await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx); // flushed to pi
+	h.ctx.mode = "tui";
+	h.state.editor = "PERSON"; // pi's Esc cleared its queue and returned the text to the editor
+	h.ctx.signal.aborted = true;
+	await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.deepEqual(h.notices.map((n) => n.opts), [{ triggerTurn: true }], "the notice wakes the model");
+});
