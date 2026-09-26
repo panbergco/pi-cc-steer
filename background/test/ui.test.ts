@@ -77,6 +77,19 @@ void describe("renderStatusPill", () => {
         assert.equal(last(), "▶ 2");
     });
 
+    void it("an SDK host that never set up pi's theme gets plain text, not an error", () => {
+        const reg = new BgRegistry();
+        const { ctx, last } = statusHarness();
+        (ctx.ui as { theme: unknown }).theme = {
+            fg() {
+                throw new Error("Theme not initialized. Call initTheme() first.");
+            },
+        };
+        mkRunningJob(reg);
+        renderStatusPill(reg, ctx);
+        assert.equal(last(), "▶ 1");
+    });
+
     void it("does not count foreground jobs", () => {
         const reg = new BgRegistry();
         const { ctx, last } = statusHarness();

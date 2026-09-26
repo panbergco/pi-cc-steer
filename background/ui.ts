@@ -71,11 +71,19 @@ export function renderStatusPill(reg: BgRegistry, ctx: UiContext): void {
         ctx.ui.setStatus(STATUS_KEY, undefined);
         return;
     }
+    // An SDK host that never set up pi's theme makes ctx.ui.theme throw: plain text there.
+    const fg = (color: string, text: string) => {
+        try {
+            return ctx.ui.theme.fg(color as never, text);
+        } catch {
+            return text;
+        }
+    };
     const parts: string[] = [];
-    if (running > 0) parts.push(ctx.ui.theme.fg("accent", `▶ ${running}`));
-    if (done > 0) parts.push(ctx.ui.theme.fg("success", `✓ ${done}`));
-    if (failed > 0) parts.push(ctx.ui.theme.fg("error", `✗ ${failed}`));
-    ctx.ui.setStatus(STATUS_KEY, parts.join(ctx.ui.theme.fg("muted", " · ")));
+    if (running > 0) parts.push(fg("accent", `▶ ${running}`));
+    if (done > 0) parts.push(fg("success", `✓ ${done}`));
+    if (failed > 0) parts.push(fg("error", `✗ ${failed}`));
+    ctx.ui.setStatus(STATUS_KEY, parts.join(fg("muted", " · ")));
 }
 
 // --- Foreground backgrounding ----------------------------------------------

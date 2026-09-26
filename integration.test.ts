@@ -7,16 +7,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@earendil-works/pi-ai/compat";
 import {
+	initTheme,
 	createAgentSession,
 	DefaultResourceLoader,
-	initTheme,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import steer from "./index.ts";
 
-initTheme(); // pi's CLI does this at start-up; the SDK leaves it to the host
+initTheme(); // pi's interactive mode does this at start-up (the tests run pi-cc-steer as in the TUI)
 
 type Msg = { role: string; content: unknown };
 const text = (m: Msg) =>
@@ -163,8 +163,8 @@ test("two notices cut off by an abort: the one pi still holds is re-sent, and th
 		fauxAssistantMessage("after"),
 		fauxAssistantMessage("next"),
 	], "rpc");
-	// Both notices are handed to pi at the boundary after "sleep 0.6"; pi takes one steering message per request,
-	// so an abort right there leaves the second in pi's queue while the extension also sends it again.
+	// The notices go to pi one per boundary; the abort cuts the run while one of them is still in pi's queue, and
+	// the extension sends it again after the abort. The model must see each once.
 	let turns = 0;
 	s.session.subscribe((e: { type: string }) => {
 		if (e.type === "turn_end" && ++turns === 3) void s.session.abort();
