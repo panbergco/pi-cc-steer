@@ -8,11 +8,12 @@
  * and the output-cap watcher.
  */
 
-import { appendFileSync, statSync } from "node:fs";
+import { appendFileSync, statSync, truncateSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
     isTerminalStatus,
     MAX_CONCURRENT_JOBS,
+    FOREGROUND_WATCH_INTERVAL_MS,
     MAX_LOG_BYTES,
     OUTPUT_WATCH_INTERVAL_MS,
     type BgJob,
@@ -22,7 +23,7 @@ import {
 } from "./types.ts";
 import type { BgRegistry } from "./registry.ts";
 import { atConcurrencyLimit, forget, markStarted } from "./registry.ts";
-import { killWithGrace } from "./spawn.ts";
+import { killProcessTree, killWithGrace } from "./spawn.ts";
 import { markNotified, sendTaskNotification } from "./notify.ts";
 import { renderStatusPill } from "./ui.ts";
 
@@ -56,9 +57,22 @@ export function startBackgroundJob(args: {
     const { reg, pi, ctx, job, exit } = args;
     ensureCompletionPromise(job);
     job.exit = exit;
-    const stopWatcher = watchOutputCap(job, () => terminateJob(job, "output_limit"));
+    // Runaway output: stop the group at once (no grace — it is filling the disk), and trim the log to the cap.
+    const stopWatcher = watchOutputCap(
+        job,
+        () => {
+            job.stopReason = "output_limit";
+            killProcessTree(job.pid, "SIGKILL");
+        },
+        FOREGROUND_WATCH_INTERVAL_MS
+    );
     void exit.then((result) => {
         stopWatcher();
+        if (job.stopReason === "output_limit") {
+            try {
+                truncateSync(job.logPath, MAX_LOG_BYTES);
+            } catch { /* best-effort */ }
+        }
         args.onExit?.(result);
         completeJob({
             job,

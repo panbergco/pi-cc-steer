@@ -21,7 +21,7 @@ import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
-import { deliverHeld } from "./notify.ts";
+import { deliverHeld, releaseWaiting } from "./notify.ts";
 import type { UiContext } from "./types.ts";
 
 /** What pi-cc-steer needs from the engine. */
@@ -52,17 +52,28 @@ export function registerBackground(pi: ExtensionAPI): Background {
     // ── Notice delivery ───────────────────────────────────────────
     pi.on("agent_start", () => {
         reg.agentRunning = true;
-        reg.runAborted = false;
+        reg.endedCleanly = false;
+        reg.compactionCancelled = false;
     });
     pi.on("turn_end", (event, ctx) => {
         const stop = (event.message as { stopReason?: string }).stopReason;
-        if (stop === "aborted" || ctx.signal?.aborted) reg.runAborted = true;
+        reg.endedCleanly = (stop === "stop" || stop === "toolUse") && !ctx.signal?.aborted;
+    });
+    pi.on("session_compact_failed", (event) => {
+        if ((event as { aborted?: boolean }).aborted) reg.compactionCancelled = true;
+    });
+    // The person sent a new message while idle: notices waiting from an interrupted run ride in it.
+    pi.on("input", (event) => {
+        const t = event.text.trimStart();
+        if (event.source === "interactive" && !event.streamingBehavior && !t.startsWith("/") && !t.startsWith("!")) {
+            releaseWaiting(reg, pi);
+        }
     });
     pi.on("agent_settled", () => {
         reg.agentRunning = false; // pi-cc-steer then calls deliverHeld for what arrived during the run
     });
 
-    // No input hook: a message typed while a command runs waits for it (Claude Code's default for bash);
+    // Typing while a command runs does not background it: the message waits (Claude Code's default for bash);
     // pi-cc-steer queues it, and Ctrl+B or send-now are how the person moves on sooner.
 
     // ── Session start ─────────────────────────────────────────────

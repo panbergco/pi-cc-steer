@@ -207,9 +207,14 @@ void describe("foreground bash", () => {
 });
 
 void describe("typing while a command runs", () => {
-    void it("registers no input hook: the message waits and the command keeps running (Claude Code's default)", () => {
+    void it("a message typed mid-command does not background it: the command runs to the end (Claude Code's default)", async () => {
         const h = startExtension();
-        assert.equal(h.handlers.has("input"), false);
+        await h.handlers.get("session_start")!({}, {});
+        const pending = h.tools.get("bash")!.execute("tc-30", { command: "sleep 3; echo still-foreground" }, undefined, undefined, uiCtx);
+        await sleep(2_500);
+        await h.handlers.get("input")!({ source: "interactive", streamingBehavior: "steer", text: "hurry up" } as never, uiCtx);
+        const res = await pending;
+        assert.ok(res.content[0].text.includes("still-foreground"), `ran in the foreground, got: ${res.content[0].text}`);
     });
 });
 
@@ -227,7 +232,10 @@ void describe("cancelling and failures (regressions)", () => {
         );
         await sleep(2_500);
         ac.abort();
-        await h.shortcuts.get("ctrl+shift+b")!(uiCtx); // too late: the command is being stopped
+        const toasts: string[] = [];
+        const ctxNotes = { ...uiCtx, ui: { ...uiCtx.ui, notify: (m: string) => toasts.push(m) } };
+        await h.shortcuts.get("ctrl+shift+b")!(ctxNotes); // too late: the command is being stopped
+        assert.equal(toasts.some((t) => t.includes("Backgrounded")), false, "no false 'Backgrounded' message");
         await assert.rejects(pending, /Command aborted/);
         await sleep(300);
         assert.equal(liveMarkedProcesses(), 0);
@@ -307,6 +315,7 @@ void describe("cancelling and failures (regressions)", () => {
         await sleep(400);
         const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
         assert.equal(notices(), 0, "held while the run is going");
+        await h.handlers.get("turn_end")!({ message: { stopReason: "stop" }, toolResults: [] } as never, { ...uiCtx, signal: undefined });
         await h.handlers.get("agent_settled")!({}, uiCtx);
         h.bg.deliverHeld(false);
         h.bg.deliverHeld(false);

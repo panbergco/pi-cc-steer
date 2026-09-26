@@ -134,7 +134,8 @@ export function sendTaskNotification(args: {
         return true;
     }
     try {
-        sendNotice(pi, notice);
+        // Idle: start a turn, with any notice still waiting from an interrupted run ahead of it.
+        startTurnWith(reg, pi, [notice]);
     } catch (err) {
         console.error("[bg-tasks] task notification failed:", err);
         return false;
@@ -156,17 +157,39 @@ export function sendNotice(
 }
 
 /**
- * The run has ended: deliver the notices held during it. When a message from the person is about to start
- * the next run, or the run was interrupted, they ride in that next message, after it (Claude Code puts the
- * person's message first). Otherwise the last one starts a turn and the others go in just before it.
+ * The run has ended: deliver the notices held during it.
+ * - A message from the person is about to start the next run: they ride in it, after it ("nextTurn";
+ *   pi places those after the person's message, the order Claude Code uses).
+ * - The run was interrupted or failed (Esc, send-now, a failed retry, a cancelled compaction): they wait for
+ *   the person's next message, so an interruption never restarts the agent.
+ * - Otherwise they start one turn.
  */
 export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, withNextMessage: boolean): void {
     const held = reg.held;
     reg.held = [];
     if (held.length === 0) return;
-    if (withNextMessage || reg.runAborted) {
-        for (const n of held) sendNotice(pi, n, { deliverAs: "nextTurn" });
+    if (withNextMessage) {
+        for (const n of [...reg.waiting.splice(0), ...held]) sendNotice(pi, n, { deliverAs: "nextTurn" });
         return;
     }
-    held.forEach((n, i) => sendNotice(pi, n, i === held.length - 1 ? DELIVER_NOTICE : {}));
+    if (!reg.endedCleanly || reg.compactionCancelled) {
+        reg.waiting.push(...held);
+        return;
+    }
+    startTurnWith(reg, pi, held);
+}
+
+/** Start one turn carrying these notices, preceded by any still waiting from an interrupted run. */
+export function startTurnWith(
+    reg: BgRegistry,
+    pi: Pick<ExtensionAPI, "sendMessage">,
+    notices: { content: string; details: unknown }[]
+): void {
+    const all = [...reg.waiting.splice(0), ...notices];
+    all.forEach((n, i) => sendNotice(pi, n, i === all.length - 1 ? DELIVER_NOTICE : {}));
+}
+
+/** The person sent a message: waiting notices ride in it, after it. */
+export function releaseWaiting(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
+    for (const n of reg.waiting.splice(0)) sendNotice(pi, n, { deliverAs: "nextTurn" });
 }

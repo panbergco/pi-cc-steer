@@ -107,7 +107,7 @@ Modelled on Claude Code's background bash:
 | A command is still running after 2 s | A hint appears under the editor: `(ctrl+b to run in background)` (`ctrl+b ctrl+b` inside tmux, where Ctrl+B is the prefix). |
 | **Ctrl+B** (or Ctrl+Shift+B, or `/bg`) while it runs | The command keeps running with its output going to a log file. The model is told it was backgrounded and carries on; messages you queued go in at that point. With nothing running, Ctrl+B is still cursor-left. |
 | The command reaches its timeout (120 s by default) | It moves to the background instead of being killed. |
-| A background command finishes | The model gets one notice with its status, exit code, output tail and log path. If pi is idle it starts a turn. If pi is busy the notice waits for the run to end, then goes in right after your next message, or starts a turn itself when nothing else follows. After an interruption it waits for your next message. |
+| A background command finishes | The model gets one notice with its status, exit code, output tail and log path. If pi is idle it starts a turn. If pi is busy the notice waits for the run to end, then goes in right after your next message, or starts a turn itself when nothing else follows. After an interruption, a failed retry or a cancelled compaction it waits for your next message, so the agent does not start again on its own. |
 | Esc, or a send-now, while a command runs in the foreground | The command and everything it started are stopped at once, as pi's own bash does. |
 | You type a message while a command runs | It waits for the command, as in Claude Code; press Ctrl+B to move on sooner. |
 
@@ -116,8 +116,9 @@ The status bar counts running, finished and failed background commands (`▶ 1 �
 Background commands, and anything they started, are stopped when the session ends; `bg_stop` and shutdown send
 SIGTERM, give the command and its children 5 seconds, then SIGKILL. Logs go to `pi-bg-tasks/` in the system temp
 directory (`TMPDIR`) and are deleted after 24 hours, at the start of a session. A command whose log passes 64 MiB is
-stopped (checked every 2 s in the background and every 0.25 s in the foreground, so a very fast writer can overshoot,
-and its log is not kept); a foreground result longer than 12,000 characters names the log that keeps the full output.
+stopped at once (the size is checked every 0.25 s, so a very fast writer can overshoot by a few hundred MB before it is
+killed); a background log is then trimmed to 64 MiB, and a foreground one is deleted. A foreground result longer than
+12,000 characters names the log that keeps the full output.
 
 The engine is adapted from [pi-bg-tasks](https://github.com/cyzlmh/pi-extensions/tree/main/pi-bg-tasks) (MIT, © cyzlmh),
 itself a fork of [pi-patty-bg-tasks](https://github.com/patty-io/pi-patty-bg-tasks) (MIT, © patty.io). Changes: Ctrl+B
@@ -169,7 +170,7 @@ The small differences that remain:
   "Operation aborted" shows just the note.
 - **Interruptions it cannot see.** An interruption from something other than send-now is only noticed at the end of
   a turn. One that lands during a retry wait, or while pi is settling, is not seen, and the queue is then sent.
-- **Nothing is persisted.** Queued messages live in memory, as pi's own queue does: `/reload`, exit or
+- **Nothing is persisted.** Queued messages, and finish notices waiting for your next message, live in memory, as pi's own queue does: `/reload`, exit or
   switching sessions drops them. If pi refuses the queued prompt (no model, no API key), pi shows its error and the
   text is not put back.
 - **Timing during compaction or retry.** A message typed while pi retries waits for the next tool batch to finish;

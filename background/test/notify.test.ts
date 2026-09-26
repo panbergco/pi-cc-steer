@@ -8,6 +8,7 @@ import {
     completionSummary,
     deliverHeld,
     escapeXml,
+    releaseWaiting,
     markNotified,
     sendTaskNotification,
 } from "../notify.ts";
@@ -148,26 +149,46 @@ void describe("notices that finish mid-run", () => {
         assert.equal(reg.held.length, 1);
     });
 
-    void it("ride after the person's next message, or after an interruption wait for it", () => {
-        for (const [withNext, aborted] of [[true, false], [false, true]] as const) {
+    void it("ride after the person's next message when one is coming", () => {
+        const { reg, pi, messages, deliverOptions } = harness();
+        reg.held = [{ content: "a", details: {} }, { content: "b", details: {} }];
+        deliverHeld(reg, pi as never, true);
+        assert.equal(messages.length, 2);
+        assert.deepEqual(deliverOptions, [{ deliverAs: "nextTurn" }, { deliverAs: "nextTurn" }]);
+    });
+
+    void it("after an interrupted or failed run, wait for the person's next message instead of restarting", () => {
+        for (const setup of [(r: BgRegistry) => (r.endedCleanly = false), (r: BgRegistry) => ((r.endedCleanly = true), (r.compactionCancelled = true))]) {
             const { reg, pi, messages, deliverOptions } = harness();
-            reg.held = [{ content: "a", details: {} }, { content: "b", details: {} }];
-            reg.runAborted = aborted;
-            deliverHeld(reg, pi as never, withNext);
-            assert.equal(messages.length, 2);
-            assert.deepEqual(deliverOptions, [{ deliverAs: "nextTurn" }, { deliverAs: "nextTurn" }]);
-            assert.equal(reg.held.length, 0);
+            setup(reg);
+            reg.held = [{ content: "a", details: {} }];
+            deliverHeld(reg, pi as never, false);
+            assert.equal(messages.length, 0, "nothing sent, no new run");
+            releaseWaiting(reg, pi as never);
+            assert.deepEqual(deliverOptions, [{ deliverAs: "nextTurn" }]);
         }
     });
 
     void it("otherwise start one turn, with every held notice in it", () => {
         const { reg, pi, messages, deliverOptions } = harness();
+        reg.endedCleanly = true;
         reg.held = [{ content: "a", details: {} }, { content: "b", details: {} }, { content: "c", details: {} }];
         deliverHeld(reg, pi as never, false);
         assert.equal(messages.length, 3);
         assert.deepEqual(deliverOptions, [{}, {}, { triggerTurn: true }], "only the last one starts a turn");
         deliverHeld(reg, pi as never, false);
         assert.equal(messages.length, 3, "delivered once");
+    });
+
+    void it("a waiting notice goes ahead of a new one that starts a turn while idle", () => {
+        const { reg, pi, messages, deliverOptions } = harness();
+        reg.waiting = [{ content: "A", details: {} }];
+        const job = mkJob({ id: "bash-idle0001", logPath: "/nope.log" });
+        add(reg, job);
+        sendTaskNotification({ reg, pi: pi as never, job });
+        assert.deepEqual(messages.map((m) => m.content.slice(0, 1)), ["A", "<"]);
+        assert.deepEqual(deliverOptions, [{}, { triggerTurn: true }]);
+        assert.equal(reg.waiting.length, 0);
     });
 });
 
