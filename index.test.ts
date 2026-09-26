@@ -235,3 +235,54 @@ test("Enter while pi is busy: no notice goes in ahead of that message at a tool 
 	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
 	assert.deepEqual(h.order.slice(-2), ["message", "notice"], "the person's message, then the notice");
 });
+
+test("Enter on a slash-command suggestion submits it, so it holds notices; Esc that only closes suggestions is no interruption", async () => {
+	const h = await setup();
+	const editor = await editorOf(h, () => true); // a suggestion list is open
+	h.state.idle = true;
+	h.state.editor = "/ask";
+	editor.handleInput("\r");
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 0, "held for the submitted template");
+
+	const h2 = await setup();
+	const e2 = await editorOf(h2, () => true);
+	await h2.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h2.ctx);
+	await h2.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h2.ctx); // flushed, on its way
+	h2.state.editor = "PERSON again";
+	e2.handleInput("\x1b"); // closes the suggestion list only
+	await h2.handlers.turn_end({ message: { stopReason: "stop" }, toolResults: [] }, h2.ctx);
+	h2.state.idle = true;
+	await h2.handlers.agent_settled({}, h2.ctx);
+	await h2.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h2.ctx);
+	await sleep(300);
+	assert.equal(h2.notices.length, 0, "the batch is still taken to be on its way");
+});
+
+test("one Esc that returns two batches to the editor releases both", async () => {
+	const h = await setup();
+	const editor = await editorOf(h);
+	for (const t of ["PERSON1", "PERSON2"]) {
+		await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: t }, h.ctx);
+		await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	}
+	editor.handleInput("\x1b");
+	h.state.editor = "PERSON1\n\nPERSON2";
+	h.ctx.signal.aborted = true;
+	await h.handlers.turn_end({ message: { stopReason: "aborted" }, toolResults: [] }, h.ctx);
+	h.state.idle = true;
+	await h.handlers.agent_settled({}, h.ctx);
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 1, "the notice wakes the model");
+});
+
+test("a notice waits at a tool boundary where pi already has something queued", async () => {
+	const h = await setup();
+	await finishJobMidRun(h);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}], context: { pendingMessages: [{}] } }, h.ctx);
+	assert.equal(h.notices.length, 0, "behind another extension's queued message, and ahead of what the person sends next");
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}], context: { pendingMessages: [] } }, h.ctx);
+	assert.equal(h.notices.length, 1);
+});

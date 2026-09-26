@@ -31,8 +31,8 @@ export interface Background {
     hasForeground(): boolean;
     /** Move every foreground bash command to the background. */
     backgroundAll(ctx: UiContext): boolean;
-    /** A tool boundary where the run goes on, after pi-cc-steer queued its own batch: notices go in now. */
-    deliverMidRun(): void;
+    /** A tool boundary where the run goes on: notices go in now, unless something is already queued in pi. */
+    deliverMidRun(queuedInPi: number): void;
     /** The run ended (see notify.ts deliverHeld). */
     deliverHeld(withNextMessage: boolean): void;
     /** Tell the engine how to see that the person's own messages are still on their way into pi. */
@@ -65,10 +65,12 @@ export function registerBackground(pi: ExtensionAPI): Background {
         reg.generation++;
     };
     let submitGuard: ReturnType<typeof setTimeout> | undefined;
-    const endSubmitting = () => {
-        reg.submitting = false;
-        if (submitGuard) clearTimeout(submitGuard);
-        submitGuard = undefined;
+    const endSubmitting = (all = true) => {
+        reg.submissions = all ? 0 : Math.max(0, reg.submissions - 1);
+        if (reg.submissions === 0 && submitGuard) {
+            clearTimeout(submitGuard);
+            submitGuard = undefined;
+        }
     };
     pi.on("agent_start", () => {
         cancelPendingStart();
@@ -98,6 +100,8 @@ export function registerBackground(pi: ExtensionAPI): Background {
     // from the transcript here and from the model in pi-cc-steer's context handler.
     pi.on("message_end", (event) => {
         const m = event.message as { role: string; customType?: string; details?: { noticeId?: string; noticeIds?: string[] } };
+        // A message of the person's arrived (e.g. a prompt template typed during a run, which pi queues itself).
+        if (m.role === "user") endSubmitting(false);
         if (m.role !== "custom" || m.customType !== EVENT.taskNotification) return;
         if (!noticeArrived(reg, idsOf(m.details))) return;
         return { message: { ...event.message, display: false, details: { ...m.details, duplicate: true } } as typeof event.message };
@@ -141,13 +145,13 @@ export function registerBackground(pi: ExtensionAPI): Background {
     return {
         hasForeground: () => reg.foreground.size > 0,
         backgroundAll: (ctx) => backgroundActiveForeground(reg, ctx),
-        deliverMidRun: () => deliverMidRun(reg, pi),
+        deliverMidRun: (queuedInPi) => deliverMidRun(reg, pi, queuedInPi),
         deliverHeld: (withNextMessage) => deliverHeld(reg, pi, withNextMessage),
         setPersonPending: (check) => {
             reg.personPending = check;
         },
         promptSubmitted: (kind) => {
-            reg.submitting = true;
+            reg.submissions++;
             cancelPendingStart();
             if (submitGuard) clearTimeout(submitGuard);
             submitGuard = undefined;
@@ -161,7 +165,7 @@ export function registerBackground(pi: ExtensionAPI): Background {
             submitGuard.unref?.();
         },
         submissionQueued: () => {
-            endSubmitting();
+            endSubmitting(false);
         },
     };
 }

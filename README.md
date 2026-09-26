@@ -191,9 +191,9 @@ The small differences that remain:
   Claude Code has the same limitation.
 
   In RPC, print or SDK use notices never start turns; they ride in the host's next prompt.
-- **Notices behind other extensions' steering messages.** pi hands the model one steering message per request by
-  default. If another extension has queued its own, a notice waits behind it, and a message you queue after that
-  waits one request longer.
+- **Notices and other extensions' steering messages.** A notice is not handed to pi at a tool boundary where pi
+  already has messages queued. One that another extension queues in the same boundary, after pi-cc-steer, can still
+  end up just ahead of a notice.
 - **Nothing is persisted.** Queued messages, and finish notices not yet delivered, live in memory, as pi's own queue does: `/reload`, exit or
   switching sessions drops them. If pi refuses the queued prompt (no model, no API key), pi shows its error and the
   text is not put back.

@@ -147,7 +147,10 @@ export default function (pi: ExtensionAPI) {
 		// there is not on its way any more.
 		const editorText = escThisRun && ctx.mode === "tui" ? ctx.ui.getEditorText() : "";
 		escThisRun = false;
-		pending = pending.filter((p) => p.how !== "steer" || !editorText || !editorText.startsWith(p.text));
+		// pi puts every queued message back, one after another, ahead of any draft: after an Esc, the batches still
+		// pending are the ones at the start of the editor.
+		const restored = editorText !== "" && pending.some((p) => p.how === "steer" && editorText.startsWith(p.text));
+		if (restored) pending = pending.filter((p) => p.how !== "steer" || !editorText.includes(p.text));
 		// A batch flushed during the run may still be on its way in (another extension's slow input handler): when
 		// it lands it starts the next run, so notices ride after it rather than starting a turn ahead of it.
 		const batchOnItsWay = pending.some((p) => p.how === "steer");
@@ -189,12 +192,16 @@ export default function (pi: ExtensionAPI) {
 				// Ctrl+B while a command runs moves it to the background, as in Claude Code; otherwise it is pi's
 				// cursor-left. Queued messages then go in at the tool boundary that this creates.
 				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
-				if (keybindings.matches(data, "app.interrupt") && !ctx.isIdle()) escThisRun = true;
-				if (e.isShowingAutocomplete?.()) return handleInput(data); // Enter here accepts a completion
+				const completing = Boolean(e.isShowingAutocomplete?.());
+				// Esc interrupts only when no suggestion list is open (otherwise it just closes the list).
+				if (!completing && keybindings.matches(data, "app.interrupt") && !ctx.isIdle()) escThisRun = true;
 				// Enter on something: it is about to become a prompt, a queued message (which becomes a prompt if the run
 				// ends first) or a command such as /new. Tell the engine now, before any extension processes it, so no
-				// notice turn starts — or goes in — ahead of it.
-				if (keybindings.matches(data, "tui.input.submit")) holdForSubmission(ctx.ui.getEditorText().trim());
+				// notice turn starts — or goes in — ahead of it. On a file suggestion Enter only fills it in; on a
+				// slash-command suggestion pi's editor submits it.
+				const text = ctx.ui.getEditorText().trim();
+				if (keybindings.matches(data, "tui.input.submit") && (!completing || text.startsWith("/"))) holdForSubmission(text);
+				if (completing) return handleInput(data);
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {
 					// Esc with messages waiting sends them now, as in Claude Code (a bare Esc still just interrupts).
@@ -257,7 +264,8 @@ export default function (pi: ExtensionAPI) {
 		// Background finish notices go in at a tool boundary (Claude Code's 'next') — but not at one where the
 		// person's own messages were just queued: pi finishes queuing those asynchronously, so a notice sent now
 		// would overtake them. They go at the next boundary, or when the run ends.
-		if (!aborted && stop === "toolUse" && !flushed) background?.deliverMidRun();
+		const queuedInPi = (event as { context?: { pendingMessages?: unknown[] } }).context?.pendingMessages?.length ?? 0;
+		if (!aborted && stop === "toolUse" && !flushed) background?.deliverMidRun(queuedInPi);
 	});
 
 	const deliverMessages = (

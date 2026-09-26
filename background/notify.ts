@@ -207,8 +207,10 @@ export function sendNotice(
  * the next boundary, ahead of anything the person sends then. Nothing goes while the person's own messages are on
  * their way into pi (pi-cc-steer does not even call this at a boundary where it queued them).
  */
-export function deliverMidRun(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
-    if (reg.personPending() || reg.submitting) return;
+export function deliverMidRun(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, queuedInPi = 0): void {
+    // Something already queued in pi (another extension's steering message): a notice now would sit behind it and
+    // ahead of anything the person sends next. It waits for a boundary with pi's queue empty.
+    if (reg.personPending() || reg.submitting || queuedInPi > 0) return;
     const n = reg.waiting.shift() ?? reg.held.shift();
     if (n) send(reg, pi, n, { deliverAs: "steer" });
 }

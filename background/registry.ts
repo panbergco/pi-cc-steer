@@ -53,9 +53,12 @@ export class BgRegistry {
     /** A session switch or shutdown has begun: no notice turn starts (reset by the next input or run, in case
      *  the switch was cancelled). */
     closed = false;
-    /** The person just submitted something in the TUI (seen at the Enter key, before any extension processes
-     *  it): no notice turn may start until that prompt's run starts, or it would be rejected. */
-    submitting = false;
+    /** Submissions of the person's still on their way into pi (counted from the Enter key, before any extension
+     *  processes them): while any is, no notice turn starts and none goes in at a tool boundary. */
+    submissions = 0;
+    get submitting(): boolean {
+        return this.submissions > 0;
+    }
     /** The person's own messages are on their way into pi (pi-cc-steer): notices wait so they never go ahead. */
     personPending: () => boolean = () => false;
     /** Notices that arrived while pi was busy, not yet handed to pi. */

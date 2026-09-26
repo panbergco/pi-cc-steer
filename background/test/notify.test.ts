@@ -323,3 +323,17 @@ void describe("sendTaskNotification — exactly-once", () => {
         assert.equal(reg.jobs.has(job.id), true);
     });
 });
+
+void describe("submissions on their way", () => {
+    void it("overlapping submissions: one arriving does not release the other's hold", () => {
+        const { reg, pi, messages } = harness();
+        reg.held = [note("a")];
+        reg.submissions = 2;
+        reg.submissions--; // the first reached pi
+        deliverMidRun(reg, pi as never);
+        assert.equal(messages.length, 0, "the second is still on its way");
+        reg.submissions--;
+        deliverMidRun(reg, pi as never);
+        assert.equal(messages.length, 1);
+    });
+});

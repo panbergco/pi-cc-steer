@@ -352,6 +352,16 @@ void describe("cancelling and failures (regressions)", () => {
         }
     });
 
+    void it("a message of the person's arriving ends its submission's hold (a template typed during a run)", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        h.bg.promptSubmitted();
+        await h.handlers.get("message_end")!({ message: { role: "user", content: "expanded template" } } as never, uiCtx);
+        await h.tools.get("bash")!.execute("tc-51", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1, "no longer held");
+    });
+
     void it("a job that finishes mid-run is held, then delivered once when the run ends", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, {});
