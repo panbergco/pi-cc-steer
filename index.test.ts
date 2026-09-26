@@ -128,6 +128,7 @@ test("after a send-now, the notice rides after the person's message in the same 
 	await h.handlers.agent_settled({}, h.ctx);
 	await tick();
 	assert.equal(h.notices.length, 0, "not a run of its own");
+	await h.handlers.input({ source: "extension", text: "now do X" }, h.ctx); // the prompt pi-cc-steer sent
 	const r = await h.handlers.before_agent_start({ prompt: "now do X" }, h.ctx);
 	assert.match(r.message.content, /<task-notification>/);
 });
@@ -166,7 +167,12 @@ async function editorOf(
 	});
 	await h.handlers.session_start({}, h.ctx);
 	await sleep(10);
-	const keys: Record<string, string> = { "tui.input.submit": "\r", "app.interrupt": "\x1b", "app.message.dequeue": "\x1b[1;3A" };
+	const keys: Record<string, string> = {
+		"tui.input.submit": "\r",
+		"app.interrupt": "\x1b",
+		"app.message.dequeue": "\x1b[1;3A",
+		"app.message.followUp": "\x1b\r",
+	};
 	const editor = factory({}, {}, { matches: (data: string, id: string) => keys[id] === data });
 	editor.onSubmit = () => {}; // what pi does after creating the editor
 	return editor;
@@ -181,6 +187,7 @@ test("Enter in the editor while pi is idle holds a finish notice for that prompt
 	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
 	await sleep(300);
 	assert.equal(h.notices.length, 0, "no turn that would reject the person's prompt");
+	await h.handlers.input({ source: "interactive", text: "hello" }, h.ctx); // reaches pi's input handlers
 	const r = await h.handlers.before_agent_start({ prompt: "hello" }, h.ctx);
 	assert.match(r.message.content, /<task-notification>/, "the notice rides in that prompt");
 });
@@ -194,6 +201,7 @@ test("while pi-cc-steer's own prompt (send-now, or messages typed after the last
 	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
 	await sleep(300);
 	assert.equal(h.notices.length, 0, "no turn that would reject the person's prompt");
+	await h.handlers.input({ source: "extension", text: "PERSON" }, h.ctx); // the prompt pi-cc-steer sent
 	const r = await h.handlers.before_agent_start({ prompt: "PERSON" }, h.ctx);
 	assert.match(r.message.content, /<task-notification>/, "the notice rides in it");
 });
@@ -346,7 +354,7 @@ test("a notice waits at a tool boundary where pi already has something queued", 
 });
 
 test("pi's dequeue key puts its queue back too; a restore that merely contains a batch's text does not release it", async () => {
-	for (const [restore, released] of [["PERSON", true], ["OTHER PERSON MORE", false]] as const) {
+	for (const [restore, released] of [["PERSON", true], ["OTHER PERSON MORE", false], ["OTHER\n\nPERSON\n\nMORE", false]] as const) {
 		const h = await setup();
 		const editor = await editorOf(h, { piQueue: () => restore });
 		await h.handlers.input({ source: "interactive", streamingBehavior: "steer", text: "PERSON" }, h.ctx);
@@ -359,4 +367,33 @@ test("pi's dequeue key puts its queue back too; a restore that merely contains a
 		await sleep(300);
 		assert.equal(h.notices.length, released ? 1 : 0, `${restore}: ${released ? "released" : "still on its way"}`);
 	}
+});
+
+test("Alt+Enter while pi works (pi queues it itself, without the editor's submit) holds notices too", async () => {
+	const h = await setup();
+	const editor = await editorOf(h);
+	await h.handlers.agent_start({}, h.ctx);
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	h.state.editor = "FOLLOW";
+	editor.handleInput("\x1b\r"); // another extension may still be processing it
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	assert.equal(h.notices.length, 0, "not ahead of the follow-up");
+	await h.handlers.input({ source: "interactive", streamingBehavior: "followUp", text: "FOLLOW" }, h.ctx);
+	await h.handlers.turn_end({ message: { stopReason: "toolUse" }, toolResults: [{}] }, h.ctx);
+	assert.equal(h.notices.length, 1, "queued in pi: the notice may go");
+});
+
+test("input pi held back (e.g. typed while it compacts) and then put back with Alt+↑ stops holding notices", async () => {
+	const h = await setup();
+	const editor = await editorOf(h, { piQueue: () => "QUEUED" });
+	h.state.idle = true;
+	h.state.editor = "QUEUED";
+	editor.handleInput("\r"); // pi keeps it aside instead of prompting (compaction), so it never reaches the input handlers
+	await h.tools.bash.execute("tc", { command: "true", run_in_background: true }, undefined, undefined, h.ctx);
+	await sleep(300);
+	assert.equal(h.notices.length, 0, "held for it");
+	editor.handleInput("\x1b[1;3A"); // Alt+↑: back in the editor
+	await sleep(50);
+	assert.equal(h.notices.length, 1, "released: the notice starts its turn");
 });

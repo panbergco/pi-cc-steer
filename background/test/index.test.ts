@@ -335,6 +335,7 @@ void describe("cancelling and failures (regressions)", () => {
         await sleep(300);
         const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
         assert.equal(notices(), 0, "no turn while the person's prompt is being prepared");
+        h.bg.submissionReached("hello", "interactive", true);
         const r = (await h.handlers.get("before_agent_start")!({} as never, uiCtx)) as unknown as { message?: { content: string } };
         assert.match(r.message!.content, /<task-notification>/, "it rides in that prompt");
         await h.handlers.get("agent_start")!({} as never, uiCtx);
@@ -386,6 +387,50 @@ void describe("cancelling and failures (regressions)", () => {
         assert.match(r.message!.content, /<task-notification>/, "it rides in that prompt");
     });
 
+    void it("a command's hold expiring does not start a notice turn while a batch of the person's is on its way", async () => {
+        const saved = { ...SUBMISSION_EXPIRY };
+        SUBMISSION_EXPIRY.commandMs = 200;
+        try {
+            const h = startExtension();
+            await h.handlers.get("session_start")!({}, { isIdle: () => true });
+            let personPending = true;
+            h.bg.setPersonPending(() => personPending);
+            await h.tools.get("bash")!.execute("tc-58", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+            h.bg.promptSubmitted("/model", "interactive", "command");
+            await sleep(500);
+            assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 0, "waits for the batch");
+            personPending = false;
+        } finally {
+            Object.assign(SUBMISSION_EXPIRY, saved);
+        }
+    });
+
+    void it("a later prompt does not carry notices ahead of an earlier submission still on its way", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        h.bg.promptSubmitted("FIRST", "interactive"); // held by a slow extension
+        await h.tools.get("bash")!.execute("tc-59", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300);
+        h.bg.promptSubmitted("SECOND", "interactive");
+        h.bg.submissionReached("SECOND", "interactive", true);
+        const r = (await h.handlers.get("before_agent_start")!({} as never, uiCtx)) as unknown as { message?: unknown } | undefined;
+        assert.equal(r?.message, undefined, "the notice waits for FIRST");
+    });
+
+    void it("a job that finishes while pi compacts outside a run is delivered once the compaction is over", async () => {
+        const h = startExtension();
+        let compacting = true;
+        await h.handlers.get("session_start")!({}, { isIdle: () => !compacting });
+        await h.tools.get("bash")!.execute("tc-60", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300); // finished: held, pi is busy compacting
+        const notices = () => h.messages.filter((m) => m.customType === EVENT.taskNotification).length;
+        assert.equal(notices(), 0);
+        await h.handlers.get("session_compact")!({} as never, uiCtx); // pi reports it while still marked compacting
+        setTimeout(() => (compacting = false), 150);
+        await sleep(500);
+        assert.equal(notices(), 1, "the notice starts its turn");
+    });
+
     void it("a submission another extension rewrote is still recognised", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
@@ -427,7 +472,7 @@ void describe("cancelling and failures (regressions)", () => {
         assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 0, "the typed one still holds");
     });
 
-    void it("input pi puts back in the editor (e.g. queued while compacting) stops holding; a restore of other text does not", async () => {
+    void it("input pi puts back in the editor (e.g. queued while compacting) stops holding — only on an exact match", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
         h.bg.promptSubmitted("PERSON", "interactive");
@@ -438,7 +483,10 @@ void describe("cancelling and failures (regressions)", () => {
         assert.equal(notices(), 0, "a restore that only contains the text is not it");
         h.bg.submissionsRestored("PERSON\n\nsomething else queued");
         await sleep(20);
-        assert.equal(notices(), 1, "put back: released");
+        assert.equal(notices(), 0, "mixed with other queued text: which part is whose cannot be told, so still held");
+        h.bg.submissionsRestored("PERSON");
+        await sleep(20);
+        assert.equal(notices(), 1, "put back exactly: released");
     });
 
 

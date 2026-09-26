@@ -268,7 +268,8 @@ export function scheduleTurn(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessag
     const generation = reg.generation;
     setTimeout(() => {
         try {
-            if (reg.closed || reg.submitting || reg.generation !== generation || !reg.isIdle() || reg.waiting.length === 0) return;
+            if (reg.closed || reg.submitting || reg.personPending() || reg.generation !== generation || !reg.isIdle()) return;
+            if (reg.waiting.length === 0) return;
             startTurnWith(reg, pi, []);
         } catch {
             // session replaced meanwhile: its notices went with it
@@ -278,7 +279,7 @@ export function scheduleTurn(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessag
 
 /** Start one turn carrying every waiting notice and these, as one message (see combine). */
 export function startTurnWith(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notices: Notice[]): void {
-    if (reg.closed || reg.submitting) {
+    if (reg.closed || reg.submitting || reg.personPending()) {
         reg.waiting.push(...notices);
         return;
     }
@@ -311,6 +312,9 @@ function combine(notices: Notice[]): Notice {
 export function takeWaiting(reg: BgRegistry):
     | { customType: string; content: string; display: boolean; details: unknown }
     | undefined {
+    // Something else of the person's still on its way (submitted earlier, held by another extension): notices
+    // wait for it rather than ride ahead of it in this prompt. (The prompt starting now has been seen.)
+    if (reg.submissions.some((s) => !s.reached)) return undefined;
     const waiting = reg.waiting.splice(0).filter((n) => !reg.arrived.has(n.id));
     if (waiting.length === 0) return undefined;
     for (const n of waiting) reg.inFlight.set(n.id, n); // arrival is recorded when pi reports it (message_end)

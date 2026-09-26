@@ -37,7 +37,7 @@ import {
 	type Queued,
 	textOf,
 } from "./steer.ts";
-import { registerBackground, segmentOf } from "./background/index.ts";
+import { registerBackground, restoredOnes } from "./background/index.ts";
 
 const ENTRY = "cc-steer.mid-turn";
 const MARK = "cc-steer.interrupted";
@@ -174,7 +174,9 @@ export default function (pi: ExtensionAPI) {
 	/** pi put its queued messages back in the editor (Esc, or its dequeue key): batches of ours among them are not on
 	 *  their way any more. */
 	const queueRestored = (restored: string) => {
-		pending = pending.filter((p) => p.how !== "steer" || !segmentOf(restored, p.text));
+		const steers = pending.filter((p) => p.how === "steer");
+		const back = restoredOnes(restored, steers.map((p) => p.text));
+		pending = pending.filter((p) => !steers.some((q, i) => q === p && back.has(i)));
 		background?.submissionsRestored(restored);
 	};
 
@@ -191,6 +193,10 @@ export default function (pi: ExtensionAPI) {
 				// cursor-left. Queued messages then go in at the tool boundary that this creates.
 				if (background?.hasForeground() && matchesKey(data, "ctrl+b") && background.backgroundAll(ctx)) return;
 				const completing = Boolean(e.isShowingAutocomplete?.());
+				// pi's follow-up key (Alt+Enter) while it works queues the text itself, without the editor's submit.
+				if (!completing && keybindings.matches(data, "app.message.followUp") && !ctx.isIdle()) {
+					holdForSubmission(ctx.ui.getEditorText().trim());
+				}
 				if (completing) return handleInput(data);
 				if (SEND_NOW_KEYS.some((k) => matchesKey(data, k)) && sendNowFromEditor(ctx)) return;
 				if (queue.length > 0 && !sendNow) {

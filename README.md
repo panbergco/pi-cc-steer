@@ -189,7 +189,7 @@ The small differences that remain:
   itself: from the editor's submit (after any slash completion) until pi-cc-steer's input handler sees it, then until
   it is queued (pi busy) or its run starts (pi idle). Meanwhile no notice starts a turn or goes in ahead of it, and
   notices ride in it. Commands (`/model`, `/new`, …), which may never become a prompt, are followed for 5 s. What
-  remains needs *another* extension, or a cancelled switch:
+  remains:
   - a prompt that comes neither from the editor nor from pi-cc-steer, while another extension's input handler is
     slow, can be rejected by pi with "Agent is already processing";
   - an extension loaded *after* pi-cc-steer that is slow over your message can let a notice go in ahead of it at a
@@ -199,7 +199,9 @@ The small differences that remain:
   - a batch of yours that another extension rewrites on its way in keeps notices back until the run ends; they then
     ride in your next prompt;
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
-  - after a cancelled session switch, notices wait for your next message instead of starting a turn.
+  - after a cancelled session switch, notices wait for your next message instead of starting a turn;
+  - when Esc or Alt+↑ puts pi's queue back in the editor and it mixes your messages with others (a follow-up, a
+    template), pi-cc-steer cannot tell which text is which, so notices wait for the run to end or your next message.
 - **The stuck-prompt warning is a guess.** A background command whose output stops on a line that looks like a
   prompt (for example `printf 'Press Enter submits form'; sleep 60`) is flagged although it is not waiting for input.
   Claude Code has the same limitation.

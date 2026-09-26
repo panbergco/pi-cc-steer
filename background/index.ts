@@ -47,14 +47,15 @@ export interface Background {
     submissionsRestored(restored: string): void;
 }
 
-/** `text` is one of the messages pi joined into `restored` (it joins queued messages with a blank line). */
-export function segmentOf(restored: string, text: string): boolean {
-    return (
-        restored === text ||
-        restored.startsWith(`${text}\n\n`) ||
-        restored.endsWith(`\n\n${text}`) ||
-        restored.includes(`\n\n${text}\n\n`)
-    );
+/**
+ * Which of `texts` pi put back in the editor, going only by an exact match: the restore is one of them, or all of
+ * them in order (pi joins queued messages with a blank line). A message can itself contain blank lines, so anything
+ * looser could name the wrong one; a restore that mixes in other messages releases nothing.
+ */
+export function restoredOnes(restored: string, texts: string[]): Set<number> {
+    if (texts.length > 0 && restored === texts.join("\n\n")) return new Set(texts.map((_, i) => i));
+    const i = texts.indexOf(restored);
+    return new Set(i === -1 ? [] : [i]);
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -89,7 +90,30 @@ export function registerBackground(pi: ExtensionAPI): Background {
         release((s) => !s.reached);
         reg.closed = false; // a run in this session: any switch that began was cancelled
     });
+    // A notice that arrives while pi compacts outside a run is held (pi is busy), and no run ends to hand it on:
+    // once the compaction is over and pi is idle, it starts its turn.
+    let inRun = false;
+    pi.on("agent_start", () => {
+        inRun = true;
+    });
+    const afterCompaction = () => {
+        if (inRun || reg.ending) return; // a run hands its notices on when it ends
+        let tries = 0;
+        const check = () => {
+            if (reg.closed || inRun || reg.ending) return;
+            if (!reg.isIdle()) {
+                if (++tries < 100) setTimeout(check, 100).unref?.();
+                return;
+            }
+            reg.waiting.push(...reg.held.splice(0));
+            scheduleTurn(reg, pi);
+        };
+        setTimeout(check, 0).unref?.();
+    };
+    pi.on("session_compact", afterCompaction);
+    pi.on("session_compact_failed", afterCompaction);
     pi.on("agent_end", () => {
+        inRun = false;
         reg.ending = true; // until pi-cc-steer's settle hands the run's notices on (deliverHeld)
     });
     // Once a session switch or shutdown begins, this session never starts a notice turn again (the switch may
@@ -197,7 +221,9 @@ export function registerBackground(pi: ExtensionAPI): Background {
         },
         submissionsRestored: (restored) => {
             // pi put queued input back in the editor (e.g. input queued while it compacted): not on its way any more.
-            release((x) => x.reached || !segmentOf(restored, x.text));
+            const unseen = reg.submissions.filter((x) => !x.reached && x.source === "interactive");
+            const back = restoredOnes(restored, unseen.map((x) => x.text));
+            release((x) => !unseen.some((u, i) => u === x && back.has(i)));
         },
     };
 }
