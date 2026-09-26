@@ -65,7 +65,9 @@ function makePi() {
             renderers.set(customType, renderer);
         },
         on(event: string, handler: SessionHandler) {
-            handlers.set(event, handler);
+            // pi calls every handler for an event, in order
+            const prev = handlers.get(event);
+            handlers.set(event, prev ? (async (e: never, c: never) => (await prev(e, c), handler(e, c))) as SessionHandler : handler);
         },
         sendMessage(msg: { customType: string; content: string }) {
             messages.push(msg);
@@ -304,6 +306,25 @@ void describe("cancelling and failures (regressions)", () => {
         await sleep(200);
         assert.equal(statSync(done, { throwIfNoEntry: false })?.isFile(), true, "the child finished its cleanup");
         unlinkSync(done);
+    });
+
+    void it("a pending notice turn is cancelled by a prompt, and never started once a session switch begins", async () => {
+        for (const cancel of ["input", "session_before_switch", "session_shutdown"]) {
+            const h = startExtension();
+            await h.handlers.get("session_start")!({}, { isIdle: () => false });
+            await h.tools.get("bash")!.execute("tc-48", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+            await sleep(300);
+            await h.handlers.get("session_start")!({}, { isIdle: () => true });
+            h.bg.deliverHeld(false); // schedules the turn
+            await h.handlers.get(cancel)!({ source: "interactive", text: "hi" } as never, uiCtx);
+            await sleep(20);
+            assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 0, `${cancel}: no turn`);
+            if (cancel !== "input") {
+                h.bg.deliverHeld(false); // a run settling during the switch schedules again
+                await sleep(20);
+                assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 0, `${cancel}: still none`);
+            }
+        }
     });
 
     void it("a job that finishes mid-run is held, then delivered once when the run ends", async () => {

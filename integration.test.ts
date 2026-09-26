@@ -69,7 +69,8 @@ async function session(steps: Array<ReturnType<typeof bash>>, mode: "tui" | "rpc
 			return step;
 		}) as never,
 	);
-	const noticesIn = (ctx: Msg[] | undefined) => (ctx ?? []).filter((m) => text(m).includes("<task-notification>")).length;
+	const noticesIn = (ctx: Msg[] | undefined) =>
+		(ctx ?? []).reduce((n, m) => n + (text(m).match(/<task-notification>/g)?.length ?? 0), 0);
 	const done = () => {
 		session.dispose();
 		faux.unregister();
@@ -191,4 +192,66 @@ test("in RPC or SDK mode a notice never starts a turn by itself: the host's next
 	await s.session.prompt("host prompt"); // would be rejected if a notice turn were running
 	assert.equal(s.noticesIn(s.contexts[2]), 1, "the notice rode in the host's prompt");
 	s.done();
+});
+
+test("two finished jobs pending at an Esc wake the model with one turn, each notice once", async () => {
+	const s = await session([
+		bash("true", { run_in_background: true }),
+		bash("true", { run_in_background: true }),
+		bash("sleep 5"),
+		fauxAssistantMessage("both noted"),
+	]);
+	const run = s.session.prompt("go");
+	await sleep(700);
+	await s.session.abort();
+	await run.catch(() => {});
+	await sleep(300);
+	assert.equal(s.contexts.length, 4, "exactly one new turn");
+	assert.equal(s.noticesIn(s.contexts[3]), 2, "both notices, once each");
+	const shown = s.session.messages.filter((m: any) => m.role === "custom" && m.display !== false).length;
+	assert.equal(shown, 1, "one message on screen carrying both");
+	s.done();
+});
+
+test("with two notices waiting and the person's message queued, the person's message still goes first", async () => {
+	const s = await session([
+		bash("true", { run_in_background: true }),
+		bash("true", { run_in_background: true }),
+		bash("sleep 1; echo one"),
+		bash("sleep 0.3; echo two"),
+		bash("sleep 0.3; echo three"),
+		bash("echo four"),
+		fauxAssistantMessage("done"),
+	]);
+	const run = s.session.prompt("go");
+	await sleep(600);
+	await s.session.prompt("PERSON", { streamingBehavior: "steer" });
+	await run;
+	const last = s.contexts.at(-1)!;
+	const person = last.findIndex((m) => text(m).includes("PERSON"));
+	const notices = last.flatMap((m, i) => (text(m).includes("<task-notification>") ? [i] : []));
+	assert.equal(s.noticesIn(last), 2, "both notices reached the model, once each");
+	assert.ok(person >= 0 && notices.every((i) => i > person), "the person's message ahead of both");
+	s.done();
+});
+
+test("a background command stuck at a prompt: the model is told (watcher running inside the engine)", async () => {
+	const { STALL_TIMING } = await import("./background/types.ts");
+	assert.deepEqual(STALL_TIMING, { checkMs: 5_000, afterMs: 45_000 }, "Claude Code's timings");
+	const saved = { ...STALL_TIMING };
+	Object.assign(STALL_TIMING, { checkMs: 50, afterMs: 300 });
+	try {
+		const s = await session([
+			bash("printf 'Overwrite existing file? (y/n) '; sleep 30", { run_in_background: true }),
+			fauxAssistantMessage("started"),
+			fauxAssistantMessage("it needs an answer"),
+		]);
+		await s.session.prompt("go");
+		await sleep(900);
+		const warned = s.contexts.some((c) => c.some((m) => text(m).includes("appears to be waiting for interactive input")));
+		assert.ok(warned, "the warning reached the model");
+		s.done();
+	} finally {
+		Object.assign(STALL_TIMING, saved);
+	}
 });

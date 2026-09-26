@@ -16,9 +16,8 @@ import {
     FOREGROUND_WATCH_INTERVAL_MS,
     MAX_LOG_BYTES,
     OUTPUT_WATCH_INTERVAL_MS,
-    STALL_AFTER_MS,
-    STALL_CHECK_MS,
     STALL_TAIL_BYTES,
+    STALL_TIMING,
     type BgJob,
     type JobStatus,
     type SpawnExit,
@@ -306,8 +305,8 @@ export function looksLikePrompt(tail: string): boolean {
 export function watchStall(
     job: BgJob,
     onStall: (tail: string) => void,
-    checkMs = STALL_CHECK_MS,
-    afterMs = STALL_AFTER_MS
+    checkMs = STALL_TIMING.checkMs,
+    afterMs = STALL_TIMING.afterMs
 ): () => void {
     let lastSize = -1;
     let lastGrowth = Date.now();

@@ -10,6 +10,7 @@ import {
     deliverMidRun,
     escapeXml,
     noticeArrived,
+    startTurnWith,
     takeWaiting,
     markNotified,
     sendTaskNotification,
@@ -161,9 +162,9 @@ void describe("notices that finish mid-run", () => {
         assert.deepEqual(deliverOptions, [{ deliverAs: "steer" }]);
         assert.equal(messages.length, 1);
         assert.equal(reg.inFlight.size, 1);
-        assert.equal(noticeArrived(reg, "a"), false, "first arrival");
+        assert.equal(noticeArrived(reg, ["a"]), false, "first arrival");
         assert.equal(reg.inFlight.size, 0);
-        assert.equal(noticeArrived(reg, "a"), true, "a second arrival is a duplicate");
+        assert.equal(noticeArrived(reg, ["a"]), true, "a second arrival is a duplicate");
     });
 
     void it("ride in the next prompt, as one message after it, when a prompt is coming", () => {
@@ -173,8 +174,9 @@ void describe("notices that finish mid-run", () => {
         assert.equal(messages.length, 0, "nothing handed to pi yet");
         const m = takeWaiting(reg)!;
         assert.equal(m.content, "a\n\nb");
-        assert.deepEqual(m.details, { status: "failed", summary: "a completed; b failed" });
+        assert.deepEqual(m.details, { status: "failed", summary: "a completed; b failed", noticeIds: ["a", "b"] });
         assert.equal(takeWaiting(reg), undefined, "taken once");
+        assert.equal(noticeArrived(reg, ["a", "b"]), false, "its arrival is a first arrival, not a duplicate");
     });
 
     void it("otherwise start one turn just after the stop, never inside it", async () => {
@@ -183,11 +185,12 @@ void describe("notices that finish mid-run", () => {
         deliverHeld(reg, pi as never, false);
         assert.equal(messages.length, 0, "not while pi is still stopping");
         await tick();
-        assert.deepEqual(deliverOptions, [{}, {}, { triggerTurn: true }], "one turn, carrying all three");
-        for (const id of ["a", "b", "c"]) noticeArrived(reg, id);
+        assert.deepEqual(deliverOptions, [{ triggerTurn: true }], "one turn, as one message carrying all three");
+        assert.equal(messages[0].content, "a\n\nb\n\nc");
+        noticeArrived(reg, ["a", "b", "c"]);
         deliverHeld(reg, pi as never, false);
         await tick();
-        assert.equal(messages.length, 3, "delivered once");
+        assert.equal(messages.length, 1, "delivered once");
     });
 
     void it("a notice handed over but never seen arriving is sent again when the run ends", async () => {
@@ -197,6 +200,20 @@ void describe("notices that finish mid-run", () => {
         deliverHeld(reg, pi as never, false);
         await tick();
         assert.equal(messages.length, 2, "re-sent; if pi still had the first copy, the second arrival is hidden");
+    });
+
+    void it("one notice per tool boundary, and none while the person's own messages are on their way", () => {
+        const { reg, pi, messages } = harness();
+        reg.held = [note("a"), note("b")];
+        let personPending = true;
+        reg.personPending = () => personPending;
+        deliverMidRun(reg, pi as never);
+        assert.equal(messages.length, 0, "the person's batch goes first");
+        personPending = false;
+        deliverMidRun(reg, pi as never);
+        assert.deepEqual(messages.map((m) => m.content), ["a"], "one at this boundary");
+        deliverMidRun(reg, pi as never);
+        assert.deepEqual(messages.map((m) => m.content), ["a", "b"]);
     });
 
     void it("a prompt or a run starting in between cancels the pending turn; the notices then ride in that prompt", async () => {
@@ -213,10 +230,18 @@ void describe("notices that finish mid-run", () => {
         const { reg, pi, messages } = harness();
         reg.held = [note("a")];
         deliverMidRun(reg, pi as never);
-        noticeArrived(reg, "a");
+        noticeArrived(reg, ["a"]);
         deliverHeld(reg, pi as never, false);
         await tick();
         assert.equal(messages.length, 1);
+    });
+
+    void it("a notice sent to start a turn but never seen arriving is sent again when the run ends", async () => {
+        const { reg, pi, messages } = harness();
+        startTurnWith(reg, pi as never, [note("a")]); // e.g. pi was in fact busy and an Esc cleared it
+        deliverHeld(reg, pi as never, false);
+        await tick();
+        assert.equal(messages.length, 2);
     });
 
     void it("a waiting notice goes ahead of a new one that starts a turn while idle", () => {
@@ -225,8 +250,9 @@ void describe("notices that finish mid-run", () => {
         const job = mkJob({ id: "bash-idle0001", logPath: "/nope.log" });
         add(reg, job);
         sendTaskNotification({ reg, pi: pi as never, job });
-        assert.deepEqual(messages.map((m) => m.content.slice(0, 1)), ["A", "<"]);
-        assert.deepEqual(deliverOptions, [{}, { triggerTurn: true }]);
+        assert.equal(messages.length, 1, "one message");
+        assert.match(messages[0].content, /^A\n\n<task-notification>/, "the waiting one first");
+        assert.deepEqual(deliverOptions, [{ triggerTurn: true }]);
         assert.equal(reg.waiting.length, 0);
     });
 });

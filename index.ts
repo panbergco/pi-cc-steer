@@ -53,6 +53,8 @@ type Pending = { text: string; kind?: Framing; how: "steer" | "prompt"; images: 
 export default function (pi: ExtensionAPI) {
 	// Claude Code's background bash (Ctrl+B). It replaces pi's bash tool, so it can be switched off.
 	const background = process.env.PI_CC_STEER_BACKGROUND === "0" ? undefined : registerBackground(pi);
+	// Notices wait while a batch of the person's messages is on its way into pi (handed over, not yet arrived).
+	background?.setPersonPending(() => pending.some((p) => p.how === "steer"));
 	let queue: Queued[] = [];
 	/** Batches handed to pi and not yet seen arriving as a user message. */
 	let pending: Pending[] = [];

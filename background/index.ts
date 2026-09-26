@@ -21,7 +21,7 @@ import { detectNonInteractive, terminateJobSilently } from "./lifecycle.ts";
 import { registerBashTool } from "./tools-bash.ts";
 import { registerTaskTools } from "./tools-tasks.ts";
 import { backgroundActiveForeground, registerUi } from "./ui.ts";
-import { deliverHeld, deliverMidRun, noticeArrived, takeWaiting } from "./notify.ts";
+import { deliverHeld, deliverMidRun, idsOf, noticeArrived, takeWaiting } from "./notify.ts";
 import { EVENT } from "./types.ts";
 import type { UiContext } from "./types.ts";
 
@@ -35,6 +35,8 @@ export interface Background {
     deliverMidRun(): void;
     /** The run ended (see notify.ts deliverHeld). */
     deliverHeld(withNextMessage: boolean): void;
+    /** Tell the engine how to see that the person's own messages are still on their way into pi. */
+    setPersonPending(check: () => boolean): void;
 }
 
 export function registerBackground(pi: ExtensionAPI): Background {
@@ -60,9 +62,16 @@ export function registerBackground(pi: ExtensionAPI): Background {
     pi.on("agent_end", () => {
         reg.ending = true; // until pi-cc-steer's settle hands the run's notices on (deliverHeld)
     });
-    for (const e of ["session_before_switch", "session_before_fork", "session_before_tree", "session_shutdown"] as const) {
-        pi.on(e as "session_shutdown", cancelPendingStart);
+    // Once a session switch or shutdown begins, this session never starts a notice turn again (the switch may
+    // still settle a run and would otherwise schedule a new one).
+    const close = () => {
+        reg.closed = true;
+        cancelPendingStart();
+    };
+    for (const e of ["session_before_switch", "session_before_fork", "session_shutdown"] as const) {
+        pi.on(e as "session_shutdown", close);
     }
+    pi.on("session_before_tree", cancelPendingStart);
     // Any prompt (typed, RPC, a template, another extension) cancels a pending notice turn; its notices ride in
     // that prompt instead (before_agent_start below).
     pi.on("input", () => {
@@ -71,9 +80,9 @@ export function registerBackground(pi: ExtensionAPI): Background {
     // A notice arriving a second time (re-sent after an abort that had not in fact cleared pi's queue) is hidden
     // from the transcript here and from the model in pi-cc-steer's context handler.
     pi.on("message_end", (event) => {
-        const m = event.message as { role: string; customType?: string; details?: { noticeId?: string } };
+        const m = event.message as { role: string; customType?: string; details?: { noticeId?: string; noticeIds?: string[] } };
         if (m.role !== "custom" || m.customType !== EVENT.taskNotification) return;
-        if (!noticeArrived(reg, m.details?.noticeId)) return;
+        if (!noticeArrived(reg, idsOf(m.details))) return;
         return { message: { ...event.message, display: false, details: { ...m.details, duplicate: true } } as typeof event.message };
     });
     // Any prompt that actually starts a run carries the waiting notices, after the prompt.
@@ -117,5 +126,8 @@ export function registerBackground(pi: ExtensionAPI): Background {
         backgroundAll: (ctx) => backgroundActiveForeground(reg, ctx),
         deliverMidRun: () => deliverMidRun(reg, pi),
         deliverHeld: (withNextMessage) => deliverHeld(reg, pi, withNextMessage),
+        setPersonPending: (check) => {
+            reg.personPending = check;
+        },
     };
 }

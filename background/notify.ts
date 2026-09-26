@@ -113,7 +113,7 @@ export function markNotified(job: BgJob): void {
 export interface Notice {
     id: string;
     content: string;
-    details: { jobId?: string; status?: string; summary?: string; noticeId?: string; [k: string]: unknown };
+    details: { jobId?: string; status?: string; summary?: string; noticeId?: string; noticeIds?: string[]; [k: string]: unknown };
 }
 
 function makeNotice(reg: BgRegistry, content: string, details: Notice["details"]): Notice {
@@ -202,11 +202,15 @@ export function sendNotice(
 }
 
 /**
- * A tool boundary where the run goes on: notices go in now, as steering messages. pi-cc-steer does not call this
- * at a boundary where it has just queued the person's own messages, so those always go first.
+ * A tool boundary where the run goes on: the oldest notice goes in now, as a steering message. One per boundary,
+ * because pi hands the model one steering message per request by default: a second one would still be queued at
+ * the next boundary, ahead of anything the person sends then. Nothing goes while the person's own messages are on
+ * their way into pi (pi-cc-steer does not even call this at a boundary where it queued them).
  */
 export function deliverMidRun(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">): void {
-    for (const n of [...reg.waiting.splice(0), ...reg.held.splice(0)]) send(reg, pi, n, { deliverAs: "steer" });
+    if (reg.personPending()) return;
+    const n = reg.waiting.shift() ?? reg.held.shift();
+    if (n) send(reg, pi, n, { deliverAs: "steer" });
 }
 
 /** Hand a notice to pi and keep a copy until it arrives (an abort can clear pi's queue). */
@@ -220,13 +224,23 @@ function send(
     sendNotice(pi, n, options);
 }
 
-/** pi delivered a notice into the conversation. Returns true when it had already arrived: a duplicate. */
-export function noticeArrived(reg: BgRegistry, noticeId: string | undefined): boolean {
-    if (!noticeId) return false;
-    reg.inFlight.delete(noticeId);
-    if (reg.arrived.has(noticeId)) return true;
-    reg.arrived.add(noticeId);
-    return false;
+/**
+ * pi delivered a notice (or a combined one) into the conversation. Returns true when every notice in it had
+ * already arrived: a duplicate.
+ */
+export function noticeArrived(reg: BgRegistry, noticeIds: string[]): boolean {
+    if (noticeIds.length === 0) return false;
+    const fresh = noticeIds.filter((id) => !reg.arrived.has(id));
+    for (const id of noticeIds) {
+        reg.inFlight.delete(id);
+        reg.arrived.add(id);
+    }
+    return fresh.length === 0;
+}
+
+/** The notice ids a delivered message carries. */
+export function idsOf(details: { noticeId?: string; noticeIds?: string[] } | undefined): string[] {
+    return details?.noticeIds ?? (details?.noticeId ? [details.noticeId] : []);
 }
 
 /**
@@ -246,7 +260,7 @@ export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage
     const generation = reg.generation;
     setTimeout(() => {
         try {
-            if (reg.generation !== generation || !reg.isIdle() || reg.waiting.length === 0) return;
+            if (reg.closed || reg.generation !== generation || !reg.isIdle() || reg.waiting.length === 0) return;
             startTurnWith(reg, pi, []);
         } catch {
             // session replaced meanwhile: its notices went with it
@@ -254,10 +268,32 @@ export function deliverHeld(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage
     }, 0).unref?.();
 }
 
-/** Start one turn carrying every waiting notice and these; only the last one triggers the turn. */
+/** Start one turn carrying every waiting notice and these, as one message (see combine). */
 export function startTurnWith(reg: BgRegistry, pi: Pick<ExtensionAPI, "sendMessage">, notices: Notice[]): void {
+    if (reg.closed) {
+        reg.waiting.push(...notices);
+        return;
+    }
     const all = [...reg.waiting.splice(0), ...notices];
-    all.forEach((n, i) => send(reg, pi, n, i === all.length - 1 ? DELIVER_NOTICE : {}));
+    if (all.length === 0) return;
+    const one = all.length === 1 ? all[0] : combine(all);
+    for (const n of all) reg.inFlight.set(n.id, n);
+    sendNotice(pi, one, DELIVER_NOTICE);
+}
+
+/**
+ * Several notices as one message. pi appends messages sent to an idle session straight to the conversation
+ * without reporting them to extensions, so only a single message can be tracked to its arrival.
+ */
+function combine(notices: Notice[]): Notice {
+    const details = notices.map((n) => n.details);
+    const worst =
+        details.find((d) => d.status === "failed")?.status ?? details.find((d) => d.status !== "completed")?.status ?? "completed";
+    return {
+        id: notices.map((n) => n.id).join("+"),
+        content: notices.map((n) => n.content).join("\n\n"),
+        details: { status: worst, summary: details.map((d) => d.summary).filter(Boolean).join("; "), noticeIds: notices.map((n) => n.id) },
+    };
 }
 
 /**
@@ -269,14 +305,7 @@ export function takeWaiting(reg: BgRegistry):
     | undefined {
     const waiting = reg.waiting.splice(0).filter((n) => !reg.arrived.has(n.id));
     if (waiting.length === 0) return undefined;
-    for (const n of waiting) reg.arrived.add(n.id);
-    const details = waiting.map((n) => n.details);
-    const worst =
-        details.find((d) => d.status === "failed")?.status ?? details.find((d) => d.status !== "completed")?.status ?? "completed";
-    return {
-        customType: EVENT.taskNotification,
-        content: waiting.map((n) => n.content).join("\n\n"),
-        display: true,
-        details: { status: worst, summary: details.map((d) => d.summary).filter(Boolean).join("; ") },
-    };
+    for (const n of waiting) reg.inFlight.set(n.id, n); // arrival is recorded when pi reports it (message_end)
+    const one = waiting.length === 1 ? waiting[0] : combine(waiting);
+    return { customType: EVENT.taskNotification, content: one.content, display: true, details: one.details };
 }
