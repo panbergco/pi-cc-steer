@@ -353,7 +353,7 @@ test("a message typed during the run but held by a slow extension until the run 
 	s.done();
 });
 
-test("a notice queued behind another extension's steering message, then an abort: the model sees it once", async () => {
+test("another extension's steering message at the same boundary as a notice, then an abort: the model sees the notice once", async () => {
 	let n = 0;
 	const other = (pi: any) =>
 		pi.on("turn_end", () => {
@@ -372,7 +372,7 @@ test("a notice queued behind another extension's steering message, then an abort
 	);
 	let turns = 0;
 	s.session.subscribe((e: { type: string }) => {
-		if (e.type === "turn_end" && ++turns === 2) void s.session.abort(); // pi keeps the notice queued behind OTHER
+		if (e.type === "turn_end" && ++turns === 2) void s.session.abort(); // cut the run while both are in pi's queue
 	});
 	await s.session.prompt("go").catch(() => {});
 	await sleep(300);

@@ -201,7 +201,7 @@ The small differences that remain:
   - an extension slow to handle a session switch or exit can see one notice turn start in the old session;
   - after a cancelled session switch, notices wait for your next message instead of starting a turn;
   - when Esc or Alt+↑ puts pi's queue back in the editor and it mixes your messages with others (a follow-up, a
-    template), pi-cc-steer cannot tell which text is which, so notices wait for the run to end or your next message.
+    template), pi-cc-steer cannot tell which text is which, so notices wait until your messages arrive, or 60 s.
 - **The stuck-prompt warning is a guess.** A background command whose output stops on a line that looks like a
   prompt (for example `printf 'Press Enter submits form'; sleep 60`) is flagged although it is not waiting for input.
   Claude Code has the same limitation.

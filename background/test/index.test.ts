@@ -440,6 +440,17 @@ void describe("cancelling and failures (regressions)", () => {
         assert.equal(notices(), 1, "the notice starts its turn");
     });
 
+    void it("however long pi stays busy outside a run (a slow compaction hook), the notice is delivered once it is idle", async () => {
+        const h = startExtension();
+        let busy = true;
+        await h.handlers.get("session_start")!({}, { isIdle: () => !busy });
+        await h.tools.get("bash")!.execute("tc-62", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(11_000);
+        busy = false;
+        await sleep(400);
+        assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1, "no cutoff");
+    });
+
     void it("/tree right after a run ends does not cancel the notice's turn for good", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
