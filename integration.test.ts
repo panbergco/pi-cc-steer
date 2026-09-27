@@ -353,7 +353,7 @@ test("a message typed during the run but held by a slow extension until the run 
 	s.done();
 });
 
-test("another extension's steering message at the same boundary as a notice, then an abort: the model sees the notice once", async () => {
+test("another extension's steering message already queued at a boundary: the notice waits, and after an abort the model sees it once", async () => {
 	let n = 0;
 	const other = (pi: any) =>
 		pi.on("turn_end", () => {
@@ -372,13 +372,14 @@ test("another extension's steering message at the same boundary as a notice, the
 	);
 	let turns = 0;
 	s.session.subscribe((e: { type: string }) => {
-		if (e.type === "turn_end" && ++turns === 2) void s.session.abort(); // cut the run while both are in pi's queue
+		// pi's queue holds OTHER at this boundary, so the notice is not handed over here; cut the run right there
+		if (e.type === "turn_end" && ++turns === 2) void s.session.abort();
 	});
 	await s.session.prompt("go").catch(() => {});
 	await sleep(300);
 	await s.session.prompt("next");
 	await sleep(100);
-	assert.equal(s.noticesIn(s.contexts.at(-1)), 1, "the copy pi kept and the re-sent one: the model sees one");
+	assert.equal(s.noticesIn(s.contexts.at(-1)), 1, "delivered with the next prompt, once");
 	s.done();
 });
 

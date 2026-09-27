@@ -454,3 +454,16 @@ test("a different prompt that merely starts with the batch's text is not taken f
 	const r = await h.handlers.before_agent_start({ prompt: "FIRST\nSECOND" }, h.ctx);
 	assert.equal(r?.message, undefined, "FIRST itself is still on its way");
 });
+
+test("a notice marked as a second arrival is kept from the model", async () => {
+	const h = await setup();
+	const note = (duplicate: boolean) => ({
+		role: "custom",
+		customType: "bg-task-notification",
+		content: "<task-notification>x</task-notification>",
+		details: duplicate ? { noticeId: "n1", duplicate: true } : { noticeId: "n1" },
+		timestamp: 1,
+	});
+	const r = await h.handlers.context({ messages: [{ role: "user", content: "go", timestamp: 0 }, note(false), note(true)] }, h.ctx);
+	assert.equal(r.messages.filter((m: { role: string }) => m.role === "custom").length, 1, "the first copy only");
+});

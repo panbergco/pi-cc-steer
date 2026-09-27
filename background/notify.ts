@@ -334,6 +334,8 @@ export function takeWaiting(reg: BgRegistry, prompt?: string):
     // Something else of the person's still on its way (submitted earlier, held by another extension): notices
     // wait for it rather than ride ahead of it in this prompt. (The prompt starting now has been seen.)
     if (reg.submissions.some((s) => !s.reached) || reg.personPending(prompt)) return undefined;
+    // Held outside a run (pi was compacting or summarising for /tree when they came): this prompt carries them too.
+    if (!reg.inRun) reg.waiting.push(...reg.held.splice(0));
     const waiting = reg.waiting.splice(0).filter((n) => !reg.arrived.has(n.id));
     if (waiting.length === 0) return undefined;
     for (const n of waiting) reg.inFlight.set(n.id, n); // arrival is recorded when pi reports it (message_end)

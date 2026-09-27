@@ -451,6 +451,30 @@ void describe("cancelling and failures (regressions)", () => {
         assert.equal(h.messages.filter((m) => m.customType === EVENT.taskNotification).length, 1, "no cutoff");
     });
 
+    void it("a notice held while pi compacts rides in the next prompt, not a turn of its own after it", async () => {
+        const h = startExtension();
+        let compacting = true;
+        await h.handlers.get("session_start")!({}, { isIdle: () => !compacting });
+        await h.tools.get("bash")!.execute("tc-63", { command: "true", run_in_background: true }, undefined, undefined, uiCtx);
+        await sleep(300); // held: pi is compacting
+        compacting = false; // …and the person's next prompt starts before the watcher looks
+        const r = (await h.handlers.get("before_agent_start")!({} as never, uiCtx)) as unknown as { message?: { content: string } };
+        assert.match(r.message!.content, /<task-notification>/, "it rides in the prompt");
+    });
+
+    void it("a notice that reaches pi twice is hidden the second time (transcript and model)", async () => {
+        const h = startExtension();
+        await h.handlers.get("session_start")!({}, { isIdle: () => true });
+        const msg = { role: "custom", customType: EVENT.taskNotification, content: "x", display: true, details: { noticeId: "n1" } };
+        const first = await h.handlers.get("message_end")!({ message: msg } as never, uiCtx);
+        assert.equal(first, undefined, "the first arrival is shown");
+        const second = (await h.handlers.get("message_end")!({ message: msg } as never, uiCtx)) as unknown as {
+            message: { display: boolean; details: { duplicate?: boolean } };
+        };
+        assert.equal(second.message.display, false, "hidden from the transcript");
+        assert.equal(second.message.details.duplicate, true, "marked, so pi-cc-steer keeps it from the model");
+    });
+
     void it("/tree right after a run ends does not cancel the notice's turn for good", async () => {
         const h = startExtension();
         await h.handlers.get("session_start")!({}, { isIdle: () => true });
