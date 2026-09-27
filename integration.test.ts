@@ -154,7 +154,7 @@ test("an abort never loses a notice already handed to pi, and never repeats it",
 	}
 });
 
-test("two notices cut off by an abort: the one pi still holds is re-sent, and the repeat is hidden from the model", async () => {
+test("two notices around an abort: both reach the model, each once", async () => {
 	const s = await session([
 		bash("true", { run_in_background: true }),
 		bash("true", { run_in_background: true }),
@@ -163,8 +163,8 @@ test("two notices cut off by an abort: the one pi still holds is re-sent, and th
 		fauxAssistantMessage("after"),
 		fauxAssistantMessage("next"),
 	], "rpc");
-	// The notices go to pi one per boundary; the abort cuts the run while one of them is still in pi's queue, and
-	// the extension sends it again after the abort. The model must see each once.
+	// The notices go to pi one per boundary; the abort cuts the run in between. Whatever pi kept or dropped, the model
+	// must end up with each notice exactly once.
 	let turns = 0;
 	s.session.subscribe((e: { type: string }) => {
 		if (e.type === "turn_end" && ++turns === 3) void s.session.abort();
